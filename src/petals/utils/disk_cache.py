@@ -3,16 +3,45 @@ import os
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import huggingface_hub
 from hivemind.utils.logging import get_logger
+from huggingface_hub.utils import EntryNotFoundError, LocalEntryNotFoundError
 
 logger = get_logger(__name__)
 
 DEFAULT_CACHE_DIR = os.getenv("PETALS_CACHE", Path(Path.home(), ".cache", "petals"))
 
 BLOCKS_LOCK_FILE = "blocks.lock"
+
+
+def get_file_from_repo(
+    repo_id: str,
+    filename: str,
+    *,
+    revision: Optional[str] = None,
+    use_auth_token: Optional[Union[str, bool]] = None,
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    **kwargs,
+) -> Optional[str]:
+    """Drop-in replacement for ``transformers.utils.get_file_from_repo`` (removed in transformers 5.x).
+
+    Returns the local path to the (cached or freshly downloaded) file, or ``None`` if the file
+    does not exist in the repo, or is not cached when ``local_files_only=True``.
+    """
+    try:
+        return huggingface_hub.hf_hub_download(
+            repo_id,
+            filename,
+            revision=revision,
+            token=use_auth_token,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+    except (EntryNotFoundError, LocalEntryNotFoundError):
+        return None
 
 
 @contextmanager

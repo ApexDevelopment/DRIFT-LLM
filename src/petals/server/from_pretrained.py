@@ -20,13 +20,18 @@ from hivemind.utils.logging import get_logger
 from huggingface_hub import get_hf_file_metadata, hf_hub_url
 from huggingface_hub.utils import EntryNotFoundError
 from transformers import PretrainedConfig, PreTrainedModel
-from transformers.utils import get_file_from_repo
 
 from petals.constants import DTYPE_MAP
 from petals.models.mixtral import WrappedMixtralBlock
 from petals.server.block_utils import get_model_block, resolve_block_dtype
 from petals.utils.auto_config import AutoDistributedConfig
-from petals.utils.disk_cache import DEFAULT_CACHE_DIR, allow_cache_reads, allow_cache_writes, free_disk_space_for
+from petals.utils.disk_cache import (
+    DEFAULT_CACHE_DIR,
+    allow_cache_reads,
+    allow_cache_writes,
+    free_disk_space_for,
+    get_file_from_repo,
+)
 from petals.utils.hf_auth import always_needs_auth
 
 logger = get_logger(__name__)

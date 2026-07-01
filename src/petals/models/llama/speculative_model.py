@@ -21,12 +21,12 @@ class DistributedLlamaForSpeculativeGeneration(DistributedLlamaForCausalLM, Gene
         logits_processor: LogitsProcessorList,
         stopping_criteria: StoppingCriteriaList,
         generation_config: GenerationConfig,
-        synced_gpus: bool,
-        streamer: Optional["BaseStreamer"],
-        logits_warper: Optional[LogitsProcessorList],
+        synced_gpus: bool = False,
+        streamer: Optional["BaseStreamer"] = None,
         speculative_inference_iteration_size: int = 10,
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
+        # transformers >=5.0 dropped the `logits_warper` argument (merged into `logits_processor`)
         assert not generation_config.do_sample, "sample is not working for speculative generation now"
         assert not synced_gpus, "synced_gpus is not working for speculative generation now"
         assert (

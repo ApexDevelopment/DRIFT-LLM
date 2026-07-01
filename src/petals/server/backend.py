@@ -16,7 +16,7 @@ from transformers import PretrainedConfig
 from petals.data_structures import InferenceMetadata
 from petals.server.memory_cache import MemoryCache
 from petals.server.task_pool import PrioritizedTaskPool
-from petals.utils.misc import get_size_in_bytes, is_dummy
+from petals.utils.misc import get_num_attention_heads, get_size_in_bytes, is_dummy
 
 logger = get_logger(__name__)
 
@@ -68,7 +68,7 @@ class TransformerBackend(ModuleBackend):
         for shard in self.module.module_shards:
             for submodule in shard.modules():
                 if isinstance(submodule, config.attn_class):
-                    self.shard_num_heads.append(submodule.num_heads)
+                    self.shard_num_heads.append(get_num_attention_heads(submodule, config))
         assert len(self.shard_num_heads) == len(self.module.devices)
         assert sum(self.shard_num_heads) == config.num_attention_heads
 

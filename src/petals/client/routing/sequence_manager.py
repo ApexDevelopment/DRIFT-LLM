@@ -13,6 +13,7 @@ from weakref import WeakMethod
 
 import dijkstar
 import numpy as np
+import torch
 from hivemind import DHT, P2P, MSGPackSerializer, PeerID
 from hivemind.dht.node import Blacklist
 from hivemind.moe.client.remote_expert_worker import RemoteExpertWorker
@@ -86,13 +87,17 @@ class RemoteSequenceManager:
         self.state = state
 
         if dht is None:
-            dht = DHT(
-                initial_peers=config.initial_peers,
-                client_mode=True,
-                num_workers=32,
-                startup_timeout=config.daemon_startup_timeout,
-                start=True,
-            )
+            # transformers >=5.0 constructs models under a meta-device context (low_cpu_mem_usage),
+            # which would make hivemind's MPFuture allocate its shared-memory buffer on the meta
+            # device and fail (`_share_filename_: only available on CPU`). Force CPU here.
+            with torch.device("cpu"):
+                dht = DHT(
+                    initial_peers=config.initial_peers,
+                    client_mode=True,
+                    num_workers=32,
+                    startup_timeout=config.daemon_startup_timeout,
+                    start=True,
+                )
         assert isinstance(dht, DHT) and dht.is_alive(), "`dht` must be a running hivemind.DHT instance"
         self.dht = dht
 

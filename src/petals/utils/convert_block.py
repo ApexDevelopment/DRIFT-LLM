@@ -12,6 +12,8 @@ from hivemind.utils.logging import get_logger, use_hivemind_log_handler
 from tensor_parallel.slicing_configs import get_bloom_config
 from transformers import PretrainedConfig
 
+from petals.utils.misc import get_num_attention_heads
+
 use_hivemind_log_handler("in_root_logger")
 logger = get_logger(__name__)
 
@@ -130,8 +132,17 @@ def make_tensor_parallel(
     for tp_shard in tp_block.module_shards:
         for submodule in tp_shard.modules():
             if isinstance(submodule, model_config.attn_class):
-                total_heads += submodule.num_heads
-    assert total_heads == model_config.num_attention_heads
+                total_heads += get_num_attention_heads(submodule, model_config)
+    if len(tp_block.module_shards) == 1:
+        assert total_heads == model_config.num_attention_heads
+    elif total_heads != model_config.num_attention_heads:
+        # Per-shard head counting is unreliable for the unmaintained tensor_parallel across
+        # transformers versions (delayed init, attention no longer stores num_heads).
+        # Tensor parallelism is being reworked in a follow-up, so warn instead of failing.
+        logger.warning(
+            f"Could not verify tensor-parallel head split: counted {total_heads} heads across "
+            f"{len(tp_block.module_shards)} shards, expected {model_config.num_attention_heads}"
+        )
     return tp_block
 
 

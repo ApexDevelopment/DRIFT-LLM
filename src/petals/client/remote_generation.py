@@ -7,7 +7,7 @@ import torch
 import transformers
 from hivemind.utils.logging import get_logger
 from torch import Tensor
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache, DynamicCache, DynamicLayer
 from transformers.generation.utils import ModelOutput
 
 from petals.client.inference_session import InferenceSession
@@ -21,7 +21,10 @@ class RemotePastKeyValues(Cache):
     """only keeps the number of seen tokens. pretends to be a legit cache"""
 
     def __init__(self) -> None:
-        super().__init__()
+        # The real KV cache lives on remote servers; this is a placeholder that only tracks the
+        # number of seen tokens. transformers >=5.0 requires Cache to be built from `layers` or a
+        # `layer_class_to_replicate`, so we pass a dummy layer class (no layers are ever appended).
+        super().__init__(layer_class_to_replicate=DynamicLayer)
         self._seen_tokens = 0
         self.hypo_ids: Optional[torch.LongTensor] = None
 
@@ -32,6 +35,9 @@ class RemotePastKeyValues(Cache):
         return self._seen_tokens
 
     def get_max_length(self) -> Optional[int]:
+        return None
+
+    def get_max_cache_shape(self) -> Optional[int]:
         return None
 
     def update_seen(self, new_seen: int) -> None:
@@ -129,7 +135,8 @@ class RemoteGenerationMixin(_SkipTokensMixin):
                 # but keep them for transformers.GenerationMixin (e.g., to compute repetition_penalty)
                 _skipped_tokens.set(max(0, n_prev_tokens - 1))
 
-            if self._supports_cache_class and "past_key_values" not in kwargs:
+            # transformers >=5.0 dropped the `_supports_cache_class` flag (all models support Cache)
+            if getattr(self, "_supports_cache_class", True) and "past_key_values" not in kwargs:
                 past_key_values = RemotePastKeyValues()
                 past_key_values.update_seen(session.position)
                 kwargs["past_key_values"] = past_key_values
