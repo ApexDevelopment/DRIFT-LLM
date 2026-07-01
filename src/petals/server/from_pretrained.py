@@ -32,6 +32,7 @@ from petals.utils.disk_cache import (
     get_file_from_repo,
 )
 from petals.utils.hf_auth import always_needs_auth
+from petals.utils.weight_conversion import maybe_convert_block_state_dict
 
 logger = get_logger(__name__)
 
@@ -67,6 +68,10 @@ def load_pretrained_block(
         cache_dir=cache_dir,
         max_disk_space=max_disk_space,
     )
+
+    # transformers >=5.0 may restructure weights when loading (e.g. Mixtral fuses per-expert
+    # weights). Petals loads block weights by name, so apply the same conversion here.
+    state_dict = maybe_convert_block_state_dict(config, state_dict, block)
 
     for param_name, _ in block.named_parameters():
         assert param_name in state_dict, f"{param_name} not in state dict"
