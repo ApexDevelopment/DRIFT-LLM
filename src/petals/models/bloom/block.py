@@ -1,18 +1,31 @@
 """
 Bloom intermediate layer
-Based on https://github.com/huggingface/transformers/commit/ca2a55e9dfb245527b5e1c954fec6ffbb7aef07b
+Based on https://github.com/huggingface/transformers/blob/main/src/transformers/models/bloom/modeling_bloom.py
 See commit history for authorship.
 """
 from typing import Optional, Tuple
 
 import torch
-from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
+from transformers.cache_utils import DynamicCache
+from transformers.masking_utils import create_causal_mask
 from transformers.models.bloom.modeling_bloom import BloomBlock, build_alibi_tensor
 
 from petals.utils.misc import is_dummy
 
 
 class WrappedBloomBlock(BloomBlock):
+    """A Petals wrapper around a stock transformers ``BloomBlock`` (ALiBi attention).
+
+    See ``petals.models.llama.block.WrappedLlamaBlock`` for the BLOOM-layout KV bridging rationale
+    (Bloom is multi-head attention, so the number of KV heads equals ``num_attention_heads``).
+    """
+
+    def __init__(self, config, layer_idx: int = 0):
+        super().__init__(config, layer_idx=0)
+        self.config = config
+        if getattr(config, "_attn_implementation", None) is None:
+            config._attn_implementation = "eager"
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -20,26 +33,60 @@ class WrappedBloomBlock(BloomBlock):
         attention_mask: Optional[torch.Tensor] = None,
         alibi: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        **kwargs
-    ):
-        assert attention_mask is None, "Non-causal attention masks are not supported yet"
+        use_cache: bool = False,
+        **kwargs,
+    ) -> Tuple[torch.FloatTensor, ...]:
         batch_size, seq_length = hidden_states.shape[:2]
-        if layer_past is not None and is_dummy(layer_past[0]):
-            # Bloom cannot use cache if it was misconsctructed(e.g. Dummy tensors)
-            # In this case, fallback to the old code:
-            layer_past = None
-        past_length = 0 if layer_past is None else layer_past[0].shape[-1]
-        seq_length_with_past = seq_length + past_length
-        attention_mask = torch.ones((batch_size, seq_length_with_past), device=hidden_states.device)
+
+        past_key_values = DynamicCache()
+        past_length = 0
+        if layer_past is not None and not is_dummy(layer_past[0]):
+            past_key, past_value = self._reorder_cache_from_bloom(layer_past, batch_size)
+            past_length = past_key.shape[2]
+            past_key_values.update(past_key, past_value, self.self_attention.layer_idx)
+
+        cache_position = torch.arange(past_length, past_length + seq_length, device=hidden_states.device)
+        ones_mask = torch.ones((batch_size, past_length + seq_length), device=hidden_states.device)
         if alibi is None:
-            alibi = build_alibi_tensor(attention_mask, num_heads=self.num_heads, dtype=hidden_states.dtype)
-        attention_mask = _prepare_4d_causal_attention_mask(
-            attention_mask=attention_mask,
-            input_shape=(batch_size, seq_length),
-            inputs_embeds=hidden_states,
-            past_key_values_length=past_length,
+            alibi = build_alibi_tensor(ones_mask, self.num_heads, dtype=hidden_states.dtype)
+
+        causal_mask = create_causal_mask(self.config, hidden_states, None, past_key_values, cache_position.unsqueeze(0))
+
+        output = super().forward(
+            hidden_states,
+            alibi=alibi,
+            attention_mask=causal_mask,
+            layer_past=past_key_values,
+            use_cache=use_cache,
+            cache_position=cache_position,
         )
-        attention_mask = attention_mask.bool()
-        return super().forward(
-            hidden_states, *args, attention_mask=attention_mask, alibi=alibi, layer_past=layer_past, **kwargs
-        )
+        hidden_states = output[0] if isinstance(output, tuple) else output
+
+        if use_cache:
+            present = past_key_values.layers[self.self_attention.layer_idx]
+            return hidden_states, self._reorder_cache_to_bloom((present.keys, present.values), batch_size)
+        return (hidden_states,)
+
+    def _reorder_cache_from_bloom(
+        self, key_value: Tuple[torch.Tensor], batch_size: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        key_states, value_states = key_value
+        num_heads = self.num_heads
+        head_dim = self.config.hidden_size // num_heads
+        seq_length = value_states.shape[1]  # value (BLOOM): [batch * heads, seq_length, head_dim]
+        key_states = key_states.permute(0, 2, 1)  # key (BLOOM): [batch * heads, head_dim, seq_length]
+        key_states = key_states.reshape(batch_size, num_heads, seq_length, head_dim)
+        value_states = value_states.reshape(batch_size, num_heads, seq_length, head_dim)
+        return key_states, value_states
+
+    def _reorder_cache_to_bloom(
+        self, key_value: Tuple[torch.Tensor], batch_size: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        key_states, value_states = key_value  # both: [batch, heads, seq_length, head_dim]
+        num_heads = self.num_heads
+        head_dim = self.config.hidden_size // num_heads
+        seq_length = key_states.shape[2]
+        value_states = value_states.reshape(batch_size * num_heads, seq_length, head_dim)
+        key_states = key_states.reshape(batch_size * num_heads, seq_length, head_dim)
+        key_states = key_states.permute(0, 2, 1)  # [batch * heads, head_dim, seq_length]
+        return key_states, value_states
