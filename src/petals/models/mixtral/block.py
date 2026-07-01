@@ -1,22 +1,30 @@
+"""
+Mixtral intermediate layer
+Based on https://github.com/huggingface/transformers/blob/main/src/transformers/models/mixtral/modeling_mixtral.py
+See commit history for authorship.
+"""
 from typing import Optional, Tuple
 
 import torch
 from transformers import MixtralConfig
 from transformers.cache_utils import DynamicCache
-from transformers.modeling_attn_mask_utils import (
-    _prepare_4d_causal_attention_mask,
-    _prepare_4d_causal_attention_mask_for_sdpa,
-)
-from transformers.models.mixtral.modeling_mixtral import MixtralDecoderLayer
+from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
+from transformers.models.mixtral.modeling_mixtral import MixtralDecoderLayer, MixtralRotaryEmbedding
 
 
 class WrappedMixtralBlock(MixtralDecoderLayer):
-    def __init__(self, config: MixtralConfig, layer_idx: int):
-        super().__init__(config, layer_idx)
+    """A Petals wrapper around a stock transformers ``MixtralDecoderLayer`` (GQA + sliding window + MoE).
 
-        self._attn_implementation = config._attn_implementation
-        self.sliding_window = config.sliding_window
-        self.layer_idx = layer_idx
+    See ``petals.models.llama.block.WrappedLlamaBlock`` for the BLOOM-layout KV bridging rationale.
+    """
+
+    def __init__(self, config: MixtralConfig, layer_idx: int = 0):
+        # layer_idx only matters for KV caching, which Petals re-implements, so we always use 0
+        super().__init__(config, layer_idx=0)
+        self.config = config
+        if getattr(config, "_attn_implementation", None) is None:
+            config._attn_implementation = "eager"
+        self.rotary_emb = MixtralRotaryEmbedding(config=config)
 
     def forward(
         self,
@@ -25,89 +33,66 @@ class WrappedMixtralBlock(MixtralDecoderLayer):
         attention_mask: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor]] = None,
         use_cache: bool = False,
-        **kwargs
-    ):
+        **kwargs,
+    ) -> Tuple[torch.FloatTensor, ...]:
         batch_size, seq_length, _ = hidden_states.shape
 
-        seq_length_with_past = seq_length
-        past_key_values_length = 0
+        past_key_values = DynamicCache()
+        past_length = 0
+        if layer_past is not None:
+            past_key, past_value = self._reorder_cache_from_bloom_to_mixtral(layer_past, batch_size)
+            past_length = past_key.shape[2]
+            past_key_values.update(past_key, past_value, self.self_attn.layer_idx)
 
-        past_key_value = layer_past
+        cache_position = torch.arange(past_length, past_length + seq_length, device=hidden_states.device)
+        position_ids = cache_position.unsqueeze(0)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        if past_key_value is not None:
-            past_key_values_length = past_key_value[0].shape[2]
-            seq_length_with_past = seq_length_with_past + past_key_values_length
-            _past_key_value = self._reorder_cache_from_bloom(past_key_value, batch_size, past_key_values_length)
-            past_key_value = DynamicCache()
-            past_key_value.key_cache = [torch.empty(0) for _ in range(self.layer_idx)] + [_past_key_value[0]]
-            past_key_value.value_cache = [torch.empty(0) for _ in range(self.layer_idx)] + [_past_key_value[1]]
-            past_key_value._seen_tokens = past_key_values_length
-
-        if self._attn_implementation == "flash_attention_2":
-            # 2d mask is passed through the layers
-            attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-        elif self._attn_implementation == "sdpa":
-            # output_attentions=True can not be supported when using SDPA, and we fall back on
-            # the manual implementation that requires a 4D causal mask in all cases.
-            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                hidden_states,
-                past_key_values_length,
-            )
-        else:
-            # 4d mask is passed through the layers
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask,
-                (batch_size, seq_length),
-                hidden_states,
-                past_key_values_length,
-                sliding_window=self.sliding_window,
-            )
-
-        position_ids = torch.arange(
-            past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=hidden_states.device
-        )
-        position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
-
-        outputs = super().forward(
+        mask_function = create_causal_mask if self.config.sliding_window is None else create_sliding_window_causal_mask
+        causal_mask = mask_function(
+            self.config,
             hidden_states,
-            *args,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
-            **kwargs
+            attention_mask,
+            past_key_values,
+            position_ids,
         )
+
+        output = super().forward(
+            hidden_states,
+            attention_mask=causal_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            position_embeddings=position_embeddings,
+            cache_position=cache_position,
+        )
+        hidden_states = output[0] if isinstance(output, tuple) else output
 
         if use_cache:
-            present_key_value = outputs[-1]
-            present_key_value = present_key_value[self.layer_idx]
-            present_key_value = self._reorder_cache_to_bloom(present_key_value, batch_size, seq_length_with_past)
-            outputs = outputs[:-1] + (present_key_value,)
+            present = past_key_values.layers[self.self_attn.layer_idx]
+            present_key_value = self._reorder_cache_from_mixtral_to_bloom((present.keys, present.values), batch_size)
+            return hidden_states, present_key_value
+        return (hidden_states,)
 
-        return outputs
-
-    def _reorder_cache_from_bloom(
-        self, key_value: Tuple[torch.Tensor], batch_size: int, seq_length: int
-    ) -> Tuple[torch.Tensor]:
-        # TODO: Move to mixin
+    def _reorder_cache_from_bloom_to_mixtral(
+        self, key_value: Tuple[torch.Tensor], batch_size: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         key_states, value_states = key_value
-        key_states = key_states.permute(0, 2, 1)
-        key_states = key_states.view(
-            batch_size, self.self_attn.num_key_value_heads, seq_length, self.self_attn.head_dim
-        )
-        value_states = value_states.view(*key_states.shape)
-        return (key_states, value_states)
+        kv_heads = self.config.num_key_value_heads
+        head_dim = self.self_attn.head_dim
+        seq_length = value_states.shape[1]  # value (BLOOM): [batch * kv_heads, seq_length, head_dim]
+        key_states = key_states.permute(0, 2, 1)  # key (BLOOM): [batch * kv_heads, head_dim, seq_length]
+        key_states = key_states.reshape(batch_size, kv_heads, seq_length, head_dim)
+        value_states = value_states.reshape(batch_size, kv_heads, seq_length, head_dim)
+        return key_states, value_states
 
-    def _reorder_cache_to_bloom(
-        self, key_value: Tuple[torch.Tensor], batch_size: int, seq_length: int
-    ) -> Tuple[torch.Tensor]:
-        # TODO: Move to mixin
-        key_states, value_states = key_value
-        value_states = value_states.view(
-            batch_size * self.self_attn.num_key_value_heads, seq_length, self.self_attn.head_dim
-        )
-        key_states = key_states.view(*value_states.shape)
-        key_states = key_states.permute(0, 2, 1)
-        return (key_states, value_states)
+    def _reorder_cache_from_mixtral_to_bloom(
+        self, key_value: Tuple[torch.Tensor], batch_size: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        key_states, value_states = key_value  # both: [batch, kv_heads, seq_length, head_dim]
+        kv_heads = self.config.num_key_value_heads
+        head_dim = self.self_attn.head_dim
+        seq_length = key_states.shape[2]
+        value_states = value_states.reshape(batch_size * kv_heads, seq_length, head_dim)
+        key_states = key_states.reshape(batch_size * kv_heads, seq_length, head_dim)
+        key_states = key_states.permute(0, 2, 1)  # [batch * kv_heads, head_dim, seq_length]
+        return key_states, value_states

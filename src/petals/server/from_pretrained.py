@@ -22,7 +22,6 @@ from huggingface_hub.utils import EntryNotFoundError
 from transformers import PretrainedConfig, PreTrainedModel
 
 from petals.constants import DTYPE_MAP
-from petals.models.mixtral import WrappedMixtralBlock
 from petals.server.block_utils import get_model_block, resolve_block_dtype
 from petals.utils.auto_config import AutoDistributedConfig
 from petals.utils.disk_cache import (
