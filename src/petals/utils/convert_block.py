@@ -1,18 +1,17 @@
 """
 Tools for converting transformer blocks, applying quantization and/or tensor parallelism
 """
-import re
 from enum import Enum
 from typing import Optional, Sequence
 
-import tensor_parallel as tp
 import torch
 import torch.nn as nn
 from hivemind.utils.logging import get_logger, use_hivemind_log_handler
-from tensor_parallel.slicing_configs import get_bloom_config
 from transformers import PretrainedConfig
 
 from petals.utils.misc import get_num_attention_heads
+from petals.utils.tensor_parallel import TensorParallel
+from petals.utils.tensor_parallel.configs import get_tensor_parallel_config
 
 use_hivemind_log_handler("in_root_logger")
 logger = get_logger(__name__)
@@ -34,7 +33,7 @@ def convert_block(
     freeze: bool = True,
     adapters: Optional[Sequence[str]] = None,
     **kwargs,
-) -> tp.TensorParallel:
+) -> TensorParallel:
     """
     Optimize a transformer block for use in a Petals server, apply tensor parallelism and/or LLM.8bit quantization
 
@@ -120,29 +119,22 @@ def quantize_module(model: nn.Module, *, quant_type: QuantType) -> nn.Module:
 def make_tensor_parallel(
     block: nn.Module, model_config: PretrainedConfig, devices: Sequence[torch.device], output_device: torch.device
 ) -> nn.Module:
-    if model_config.model_type == "bloom":
-        tp_config = get_bloom_config(model_config, devices)
-        del tp_config.state_rules[re.compile(".*word_embeddings.weight$")]
-    else:
-        if len(devices) > 1:
-            logger.warning("Tensor parallelism is not tested for models other than BLOOM yet, proceed with caution")
-        tp_config = None
-    tp_block = tp.TensorParallel(block, devices, config=tp_config, output_device=output_device, delay_init=True)
+    tp_config = get_tensor_parallel_config(model_config, devices)
+    if tp_config is None and len(devices) > 1:
+        logger.warning(
+            f"No head-parallel tensor-parallel config for model_type={model_config.model_type!r}; "
+            f"falling back to the generic auto config (correct but communication-heavy)"
+        )
+    tp_block = TensorParallel(block, devices, config=tp_config, output_device=output_device, delay_init=True)
     total_heads = 0
     for tp_shard in tp_block.module_shards:
         for submodule in tp_shard.modules():
             if isinstance(submodule, model_config.attn_class):
                 total_heads += get_num_attention_heads(submodule, model_config)
-    if len(tp_block.module_shards) == 1:
-        assert total_heads == model_config.num_attention_heads
-    elif total_heads != model_config.num_attention_heads:
-        # Per-shard head counting is unreliable for the unmaintained tensor_parallel across
-        # transformers versions (delayed init, attention no longer stores num_heads).
-        # Tensor parallelism is being reworked in a follow-up, so warn instead of failing.
-        logger.warning(
-            f"Could not verify tensor-parallel head split: counted {total_heads} heads across "
-            f"{len(tp_block.module_shards)} shards, expected {model_config.num_attention_heads}"
-        )
+    assert total_heads == model_config.num_attention_heads, (
+        f"Tensor-parallel head split is inconsistent: counted {total_heads} query heads across "
+        f"{len(tp_block.module_shards)} shard(s), expected {model_config.num_attention_heads}"
+    )
     return tp_block
 
 

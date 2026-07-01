@@ -11,6 +11,8 @@ from transformers.cache_utils import DynamicCache
 from transformers.masking_utils import create_causal_mask
 from transformers.models.falcon.modeling_falcon import FalconDecoderLayer, FalconRotaryEmbedding, build_alibi_tensor
 
+from petals.utils.misc import is_dummy
+
 
 class WrappedFalconBlock(FalconDecoderLayer):
     """A Petals wrapper around a stock transformers ``FalconDecoderLayer`` (ALiBi or rotary, GQA)."""
@@ -39,7 +41,7 @@ class WrappedFalconBlock(FalconDecoderLayer):
 
         past_key_values = DynamicCache()
         past_length = 0
-        if layer_past is not None:
+        if layer_past is not None and not is_dummy(layer_past[0]):
             past_key, past_value = self._reorder_cache_from_bloom_to_falcon(layer_past, batch_size)
             past_length = past_key.shape[2]
             past_key_values.update(past_key, past_value, self.self_attention.layer_idx)

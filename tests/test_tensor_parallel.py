@@ -3,10 +3,9 @@ import random
 import pytest
 import torch
 import transformers
-from tensor_parallel import TensorParallel
-from tensor_parallel.slicing_configs import get_bloom_config
 
 from petals.server.from_pretrained import load_pretrained_block
+from petals.utils.tensor_parallel import TensorParallel, get_bloom_config
 from test_utils import MODEL_NAME
 
 

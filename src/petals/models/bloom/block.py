@@ -25,6 +25,11 @@ class WrappedBloomBlock(BloomBlock):
         self.config = config
         if getattr(config, "_attn_implementation", None) is None:
             config._attn_implementation = "eager"
+        # Disable the legacy Megatron `pretraining_tp` slow path: it slices `dense.weight` /
+        # `dense_4h_to_h.weight` by hand (bypassing the module forward), which is incompatible with
+        # tensor-parallel sharding, and is numerically equivalent to the standard path anyway.
+        self.self_attention.pretraining_tp = 1
+        self.mlp.pretraining_tp = 1
 
     def forward(
         self,
@@ -70,10 +75,11 @@ class WrappedBloomBlock(BloomBlock):
     def _reorder_cache_from_bloom(
         self, key_value: Tuple[torch.Tensor], batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Derive head count / head_dim from the tensor shapes (not config) so that this stays correct
+        # when tensor parallelism gives a shard only a subset of the attention heads.
         key_states, value_states = key_value
-        num_heads = self.num_heads
-        head_dim = self.config.hidden_size // num_heads
-        seq_length = value_states.shape[1]  # value (BLOOM): [batch * heads, seq_length, head_dim]
+        seq_length, head_dim = value_states.shape[1], value_states.shape[2]  # value: [batch * heads, seq, head_dim]
+        num_heads = value_states.shape[0] // batch_size
         key_states = key_states.permute(0, 2, 1)  # key (BLOOM): [batch * heads, head_dim, seq_length]
         key_states = key_states.reshape(batch_size, num_heads, seq_length, head_dim)
         value_states = value_states.reshape(batch_size, num_heads, seq_length, head_dim)
@@ -83,9 +89,7 @@ class WrappedBloomBlock(BloomBlock):
         self, key_value: Tuple[torch.Tensor], batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         key_states, value_states = key_value  # both: [batch, heads, seq_length, head_dim]
-        num_heads = self.num_heads
-        head_dim = self.config.hidden_size // num_heads
-        seq_length = key_states.shape[2]
+        num_heads, seq_length, head_dim = key_states.shape[1], key_states.shape[2], key_states.shape[3]
         value_states = value_states.reshape(batch_size * num_heads, seq_length, head_dim)
         key_states = key_states.reshape(batch_size * num_heads, seq_length, head_dim)
         key_states = key_states.permute(0, 2, 1)  # [batch * heads, head_dim, seq_length]

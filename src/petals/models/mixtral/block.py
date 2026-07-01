@@ -11,6 +11,8 @@ from transformers.cache_utils import DynamicCache
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from transformers.models.mixtral.modeling_mixtral import MixtralDecoderLayer, MixtralRotaryEmbedding
 
+from petals.utils.misc import is_dummy
+
 
 class WrappedMixtralBlock(MixtralDecoderLayer):
     """A Petals wrapper around a stock transformers ``MixtralDecoderLayer`` (GQA + sliding window + MoE).
@@ -39,7 +41,7 @@ class WrappedMixtralBlock(MixtralDecoderLayer):
 
         past_key_values = DynamicCache()
         past_length = 0
-        if layer_past is not None:
+        if layer_past is not None and not is_dummy(layer_past[0]):
             past_key, past_value = self._reorder_cache_from_bloom_to_mixtral(layer_past, batch_size)
             past_length = past_key.shape[2]
             past_key_values.update(past_key, past_value, self.self_attn.layer_idx)
@@ -76,10 +78,11 @@ class WrappedMixtralBlock(MixtralDecoderLayer):
     def _reorder_cache_from_bloom_to_mixtral(
         self, key_value: Tuple[torch.Tensor], batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Derive the KV-head count from the tensor shapes (not config) so this stays correct when
+        # tensor parallelism gives a shard only a subset of the key/value heads.
         key_states, value_states = key_value
-        kv_heads = self.config.num_key_value_heads
-        head_dim = self.self_attn.head_dim
-        seq_length = value_states.shape[1]  # value (BLOOM): [batch * kv_heads, seq_length, head_dim]
+        seq_length, head_dim = value_states.shape[1], value_states.shape[2]  # value: [batch * kv_heads, seq, head_dim]
+        kv_heads = value_states.shape[0] // batch_size
         key_states = key_states.permute(0, 2, 1)  # key (BLOOM): [batch * kv_heads, head_dim, seq_length]
         key_states = key_states.reshape(batch_size, kv_heads, seq_length, head_dim)
         value_states = value_states.reshape(batch_size, kv_heads, seq_length, head_dim)
@@ -89,9 +92,7 @@ class WrappedMixtralBlock(MixtralDecoderLayer):
         self, key_value: Tuple[torch.Tensor], batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         key_states, value_states = key_value  # both: [batch, kv_heads, seq_length, head_dim]
-        kv_heads = self.config.num_key_value_heads
-        head_dim = self.self_attn.head_dim
-        seq_length = key_states.shape[2]
+        kv_heads, seq_length, head_dim = key_states.shape[1], key_states.shape[2], key_states.shape[3]
         value_states = value_states.reshape(batch_size * kv_heads, seq_length, head_dim)
         key_states = key_states.reshape(batch_size * kv_heads, seq_length, head_dim)
         key_states = key_states.permute(0, 2, 1)  # [batch * kv_heads, head_dim, seq_length]

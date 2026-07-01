@@ -9,9 +9,9 @@ from hivemind import BatchTensorDescriptor, TensorDescriptor
 from hivemind.moe.expert_uid import ExpertUID
 from hivemind.moe.server.module_backend import ModuleBackend
 from hivemind.utils import get_logger
-from tensor_parallel import TensorParallel
-from tensor_parallel.tensor_parallel import PerDeviceTensors
 from transformers import PretrainedConfig
+
+from petals.utils.tensor_parallel import PerDeviceTensors, TensorParallel
 
 from petals.data_structures import InferenceMetadata
 from petals.server.memory_cache import MemoryCache

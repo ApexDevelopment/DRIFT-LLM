@@ -39,7 +39,6 @@ dependencies = [
     "transformers>=5.12,<5.13",  # if changed, update the version assert in petals/__init__.py
     "speedtest-cli>=2.1.3",
     "hivemind @ git+https://github.com/learning-at-home/hivemind.git@213bff98a62accb91f254e2afdccbf1d69ebdea9",  # bumped in Phase 7
-    "tensor_parallel==1.0.23",  # unmaintained; replaced in Phase 3
     "humanfriendly",
     "async-timeout>=4.0.2",
     "cpufeature>=0.2.0; platform_machine == 'x86_64'",
