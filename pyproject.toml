@@ -10,7 +10,7 @@ name = "petals"
 dynamic = ["version"]
 description = "Easy way to efficiently run 100B+ language models without high-end GPUs"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 authors = [
     { name = "Petals Developers", email = "petals-devs@googlegroups.com" },
 ]
@@ -20,10 +20,9 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -32,24 +31,24 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "torch>=2.3,<2.4",  # baseline era: torch 2.4+ ships triton>=3.0, which drops triton.ops that bitsandbytes 0.41.1 imports
-    "bitsandbytes==0.41.1",
+    "torch>=2.5,<2.6",
+    "bitsandbytes>=0.45,<0.46",
     "accelerate>=0.27.2",
-    "huggingface-hub>=0.11.1,<1.0.0",
-    "tokenizers>=0.13.3",
-    "transformers==4.43.1",  # if you change this, please also change version assert in petals/__init__.py
-    "speedtest-cli==2.1.3",
-    "hivemind @ git+https://github.com/learning-at-home/hivemind.git@213bff98a62accb91f254e2afdccbf1d69ebdea9",
-    "tensor_parallel==1.0.23",
+    "huggingface-hub>=0.11.1,<1.0.0",  # transformers 4.43 requires hub <1.0; bumped with transformers in Phase 2
+    "tokenizers>=0.13.3",  # upper bound is dictated by transformers; bumped in Phase 2
+    "transformers==4.43.1",  # keystone: bumped in Phase 2 (model-integration refactor). If changed, update assert in petals/__init__.py
+    "speedtest-cli>=2.1.3",
+    "hivemind @ git+https://github.com/learning-at-home/hivemind.git@213bff98a62accb91f254e2afdccbf1d69ebdea9",  # bumped in Phase 7
+    "tensor_parallel==1.0.23",  # unmaintained; replaced in Phase 3
     "humanfriendly",
     "async-timeout>=4.0.2",
     "cpufeature>=0.2.0; platform_machine == 'x86_64'",
     "packaging>=20.9",
-    "sentencepiece>=0.1.99",
-    "peft==0.8.2",
-    "safetensors>=0.3.1",
+    "sentencepiece>=0.2.0",
+    "peft==0.8.2",  # coupled to transformers (lora.Linear API, get_file_from_repo); bumped in Phase 2
+    "safetensors>=0.4.3",
     "Dijkstar>=2.6.0",
-    "numpy<2",
+    "numpy<2",  # hivemind (old pin) is not numpy-2 ready; lifted in Phase 7
 ]
 
 [project.optional-dependencies]

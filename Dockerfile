@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:11.0.3-cudnn8-devel-ubuntu20.04
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 LABEL maintainer="bigscience-workshop"
 LABEL repository="petals"
 
@@ -10,22 +10,23 @@ RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
 RUN apt-get update && apt-get install -y --no-install-recommends \
   build-essential \
   wget \
+  curl \
   git \
+  ca-certificates \
   && apt-get clean autoclean && rm -rf /var/lib/apt/lists/{apt,dpkg,cache,log} /tmp/* /var/tmp/*
 
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O install_miniconda.sh && \
-  bash install_miniconda.sh -b -p /opt/conda && rm install_miniconda.sh
-ENV PATH="/opt/conda/bin:${PATH}"
-
-RUN conda install python~=3.10.12 pip && \
-    pip install --no-cache-dir "torch>=1.12" && \
-    conda clean --all && rm -rf ~/.cache/pip
+# Install uv (manages the Python toolchain and dependencies)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
 
 VOLUME /cache
 ENV PETALS_CACHE=/cache
+ENV UV_LINK_MODE=copy
 
 COPY . petals/
-RUN pip install --no-cache-dir -e petals
-
 WORKDIR /home/petals/
+RUN uv sync --extra dev --python 3.11
+# Put the project venv on PATH so `python -m petals.cli.*` works directly
+ENV PATH="/home/petals/.venv/bin:${PATH}"
+
 CMD bash
