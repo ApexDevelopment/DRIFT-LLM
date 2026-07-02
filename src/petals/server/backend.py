@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from itertools import chain
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import torch
@@ -11,11 +10,12 @@ from hivemind.moe.server.module_backend import ModuleBackend
 from hivemind.utils import get_logger
 from transformers import PretrainedConfig
 
-from petals.utils.tensor_parallel import PerDeviceTensors, TensorParallel
+from petals.utils.tensor_parallel import TensorParallel
 
 from petals.data_structures import InferenceMetadata
 from petals.server.memory_cache import MemoryCache
 from petals.server.task_pool import PrioritizedTaskPool
+from petals.utils.kv_cache import StandardGQACache
 from petals.utils.misc import get_num_attention_heads, get_size_in_bytes, is_dummy
 
 logger = get_logger(__name__)
@@ -72,6 +72,11 @@ class TransformerBackend(ModuleBackend):
         assert len(self.shard_num_heads) == len(self.module.devices)
         assert sum(self.shard_num_heads) == config.num_attention_heads
 
+        # The cache layout (descriptor shapes, prefix selection, write-back) is owned by a
+        # pluggable strategy so that non-standard layouts (sliding window, MLA) can be added
+        # without touching the backend. Models select one via `config.kv_cache_strategy`.
+        self.cache_strategy = getattr(config, "kv_cache_strategy", StandardGQACache)(config)
+
         self.inference_schema = (
             (
                 *self.args_schema,
@@ -87,16 +92,13 @@ class TransformerBackend(ModuleBackend):
 
     def get_inference_cache_descriptors(self, batch_size: int, max_length: int) -> Sequence[TensorDescriptor]:
         """Create tensor descriptors for attention cache tensors used during inference_step"""
-        head_dim = self.config.hidden_size // self.config.num_attention_heads
-        cache_tensors = []
-        for device, num_heads in zip(self.module.devices, self.shard_num_heads):
-            num_heads //= self.config.num_key_value_groups
-            if hasattr(self.config, "num_key_value_heads"):
-                num_heads = self.config.num_key_value_heads
-            keys = TensorDescriptor((batch_size, num_heads, head_dim, max_length), dtype=self.dtype, device=device)
-            values = TensorDescriptor((batch_size, num_heads, max_length, head_dim), dtype=self.dtype, device=device)
-            cache_tensors.extend((keys, values))
-        return cache_tensors
+        return self.cache_strategy.get_cache_descriptors(
+            batch_size,
+            max_length,
+            dtype=self.dtype,
+            devices=self.module.devices,
+            shard_num_heads=self.shard_num_heads,
+        )
 
     def forward(self, *inputs: Union[torch.Tensor, str]) -> Tuple[torch.Tensor, ...]:
         *inputs, active_adapter = inputs
@@ -128,7 +130,9 @@ class TransformerBackend(ModuleBackend):
             # is at least 4-6x less than `autograd_memory`.
             max_chunk_length = self._estimate_max_chunk_length(hidden_states, inference_info)
             output_hidden_states = torch.empty_like(hidden_states) if seq_len > max_chunk_length else None
-            layer_past = self._select_layer_past(cache_tensors, inference_info.prefix_length)
+            layer_past = self.cache_strategy.select_layer_past(
+                cache_tensors, inference_info.prefix_length, num_shards=len(self.module.module_shards)
+            )
             for offset in range(0, seq_len, max_chunk_length):
                 hidden_states_chunk = hidden_states[:, offset : offset + max_chunk_length, :]
                 output_hidden_states_chunk, new_kvs = self.module.forward(
@@ -140,7 +144,7 @@ class TransformerBackend(ModuleBackend):
                     output_hidden_states = output_hidden_states_chunk  # saves one memcopy
                 layer_past = new_kvs
 
-            self._update_cache_inplace(cache_tensors, new_kvs, inference_info.prefix_length)
+            self.cache_strategy.update_cache(cache_tensors, new_kvs, inference_info.prefix_length)
             return (output_hidden_states,)
 
     def _estimate_max_chunk_length(self, hidden_states: torch.Tensor, inference_info: InferenceMetadata) -> int:
@@ -156,29 +160,6 @@ class TransformerBackend(ModuleBackend):
         if not is_dummy(hypo_ids):
             for cache_tensor in cache_tensors:
                 cache_tensor[...] = cache_tensor[hypo_ids.to(cache_tensor.device)]  # in-place reorder cache by hypo ids
-
-    def _select_layer_past(self, cache_tensors: Sequence[torch.Tensor], prefix_length: int) -> Sequence[torch.Tensor]:
-        """Extract first {prefix_length} tokens and reshape them such that they can be used as layer_past"""
-        key_cache, value_cache = list(cache_tensors[0::2]), list(cache_tensors[1::2])
-        for i in range(len(key_cache)):
-            key_cache[i] = key_cache[i].flatten(0, 1)[:, :, :prefix_length]
-            # shape: [batch * num_kv_heads, head_dim, kv_length]
-            value_cache[i] = value_cache[i].flatten(0, 1)[:, :prefix_length]
-            # shape: [batch * num_kv_heads, kv_length, head_dim]
-        layer_past = tuple(chain(*zip(key_cache, value_cache)))
-        return PerDeviceTensors(*layer_past) if len(self.module.module_shards) > 1 else layer_past
-
-    def _update_cache_inplace(
-        self, cache_tensors: Sequence[torch.Tensor], new_kvs: Sequence[torch.Tensor], prefix_length: int
-    ):
-        """Writes new key/value tensors back into cache, works in-place"""
-        _batch_size_times_num_kv_heads, head_dim, new_length = new_kvs[0].shape
-        for cache_key, new_key in zip(cache_tensors[0::2], new_kvs[0::2]):
-            new_key = new_key.view(*cache_key.shape[:3], new_length)
-            cache_key[:, :, :, prefix_length:new_length] = new_key[:, :, :, prefix_length:new_length]
-        for cache_value, new_value in zip(cache_tensors[1::2], new_kvs[1::2]):
-            new_value = new_value.view(*cache_value.shape[:2], new_length, head_dim)
-            cache_value[:, :, prefix_length:new_length, :] = new_value[:, :, prefix_length:new_length, :]
 
     def get_pools(self) -> Sequence[PrioritizedTaskPool]:
         return self.forward_pool, self.backward_pool, self.inference_pool

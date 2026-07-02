@@ -56,7 +56,9 @@ def get_model_block(config, layer_idx: int = 0):
     """
     Create a single model block based on the config's block_class.
 
-    Petals re-implements KV caching itself, so all block classes normalize layer_idx to 0
-    internally and are constructed uniformly.
+    Petals re-implements KV caching itself, so blocks normalize the *cache* layer index to 0
+    internally. The true global ``layer_idx`` is still passed through: most architectures ignore
+    it, but ones whose layers differ by position (e.g. Gemma's alternating sliding/full attention
+    and local/global rotary) need it to build the correct block.
     """
-    return config.block_class(config)
+    return config.block_class(config, layer_idx=layer_idx)
