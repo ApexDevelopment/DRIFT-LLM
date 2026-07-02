@@ -67,6 +67,7 @@ class Server:
         max_alloc_timeout: float = 600,
         attn_cache_tokens: Optional[int] = None,
         torch_dtype: str = "auto",
+        attn_implementation: str = "auto",
         revision: Optional[str] = None,
         cache_dir: Optional[str] = None,
         max_disk_space: Optional[int] = None,
@@ -113,6 +114,11 @@ class Server:
             use_auth_token=token,
             revision=revision,
         )
+
+        # "auto" leaves _attn_implementation unset so each block picks its own correct default
+        # (see petals.utils.misc.default_attn_implementation); an explicit choice forces every block.
+        if attn_implementation != "auto":
+            self.block_config._attn_implementation = attn_implementation
 
         if dht_prefix is None:
             dht_prefix = self.block_config.dht_prefix

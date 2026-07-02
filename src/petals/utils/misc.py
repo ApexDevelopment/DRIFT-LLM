@@ -46,6 +46,28 @@ def get_num_attention_heads(attn_module: torch.nn.Module, config) -> int:
     return config.num_attention_heads
 
 
+def default_attn_implementation(config) -> str:
+    """Best *correct* attention implementation for a server-side block when none is forced.
+
+    Defaults to ``sdpa`` (``torch.nn.functional.scaled_dot_product_attention``), which runs on CPU
+    and on GPU dispatches to FlashAttention / memory-efficient kernels -- the modern fast path --
+    while staying numerically equivalent to ``eager``. A few features have no correct sdpa path in
+    ``transformers`` given how Petals drives attention, so those stay on ``eager``:
+
+      * ALiBi -- Bloom (always) and Falcon with ``alibi=True``: Petals folds ALiBi into a 4D mask
+        that the sdpa attention path does not consume, and
+      * attention logit softcapping (Gemma 2): silently dropped by sdpa.
+
+    ``flash_attention_2`` is intentionally not selected here: Petals feeds attention an explicit 4D
+    mask, whereas FA2 wants the varlen / ``cu_seqlens`` form (a Phase 5 follow-up). On GPU, sdpa
+    already routes through FlashAttention for the common case.
+    """
+    uses_alibi = getattr(config, "alibi", False) or getattr(config, "model_type", None) == "bloom"
+    if uses_alibi or getattr(config, "attn_logit_softcapping", None):
+        return "eager"
+    return "sdpa"
+
+
 def docstring_from(source):
     def add_docstring(dest):
         dest.__doc__ = source.__doc__

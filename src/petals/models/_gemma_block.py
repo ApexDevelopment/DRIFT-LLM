@@ -20,7 +20,7 @@ from transformers.cache_utils import DynamicCache
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 
 from petals.models._gqa_block import BloomLayoutCacheMixin
-from petals.utils.misc import is_dummy
+from petals.utils.misc import default_attn_implementation, is_dummy
 
 
 class WrappedGemmaBlock(BloomLayoutCacheMixin):
@@ -36,7 +36,7 @@ class WrappedGemmaBlock(BloomLayoutCacheMixin):
 
     def __init__(self, config, layer_idx: int = 0):
         if getattr(config, "_attn_implementation", None) is None:
-            config._attn_implementation = "eager"
+            config._attn_implementation = default_attn_implementation(config)
         # Build attention from the true global index so it derives the right attention type,
         # sliding window and rotary base; then normalize the cache index (Petals owns one layer).
         super().__init__(config, layer_idx=layer_idx)

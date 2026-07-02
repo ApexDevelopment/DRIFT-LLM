@@ -11,7 +11,7 @@ from transformers.cache_utils import DynamicCache
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from transformers.models.mixtral.modeling_mixtral import MixtralDecoderLayer, MixtralRotaryEmbedding
 
-from petals.utils.misc import is_dummy
+from petals.utils.misc import default_attn_implementation, is_dummy
 
 
 class WrappedMixtralBlock(MixtralDecoderLayer):
@@ -25,7 +25,7 @@ class WrappedMixtralBlock(MixtralDecoderLayer):
         super().__init__(config, layer_idx=0)
         self.config = config
         if getattr(config, "_attn_implementation", None) is None:
-            config._attn_implementation = "eager"
+            config._attn_implementation = default_attn_implementation(config)
         self.rotary_emb = MixtralRotaryEmbedding(config=config)
 
     def forward(

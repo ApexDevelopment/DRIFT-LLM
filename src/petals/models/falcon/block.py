@@ -11,7 +11,7 @@ from transformers.cache_utils import DynamicCache
 from transformers.masking_utils import create_causal_mask
 from transformers.models.falcon.modeling_falcon import FalconDecoderLayer, FalconRotaryEmbedding, build_alibi_tensor
 
-from petals.utils.misc import is_dummy
+from petals.utils.misc import default_attn_implementation, is_dummy
 
 
 class WrappedFalconBlock(FalconDecoderLayer):
@@ -19,9 +19,10 @@ class WrappedFalconBlock(FalconDecoderLayer):
 
     def __init__(self, config, layer_idx: int = 0):
         # FalconDecoderLayer.__init__ selects the attention class by config._attn_implementation,
-        # so it must be set before calling super().__init__.
+        # so it must be set before calling super().__init__. default_attn_implementation keeps ALiBi
+        # Falcon on eager (folded 4D mask) while letting rotary Falcon use the faster sdpa path.
         if getattr(config, "_attn_implementation", None) is None:
-            config._attn_implementation = "eager"
+            config._attn_implementation = default_attn_implementation(config)
         super().__init__(config, layer_idx=0)
         self.config = config
         self.num_heads = config.num_attention_heads

@@ -98,6 +98,10 @@ def main():
     parser.add_argument("--torch_dtype", type=str, choices=DTYPE_MAP.keys(), default="auto",
                         help="Use this dtype to store block weights and do computations. "
                              "By default, respect the dtypes in the pre-trained state dict.")
+    parser.add_argument("--attn_implementation", type=str, choices=["auto", "eager", "sdpa"], default="auto",
+                        help="Attention implementation for block compute. 'auto' (default) picks per "
+                             "architecture: sdpa (FlashAttention/memory-efficient kernels on GPU) where "
+                             "correct, eager for ALiBi (Bloom/Falcon) and Gemma-2 logit softcapping.")
     parser.add_argument('--max_alloc_timeout', type=float, default=600,
                         help="If the cache is full, the server will wait for memory to be freed up to this many seconds"
                              " before rejecting the request")

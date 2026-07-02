@@ -24,6 +24,8 @@ class WrappedBloomBlock(BloomBlock):
         super().__init__(config, layer_idx=0)
         self.config = config
         if getattr(config, "_attn_implementation", None) is None:
+            # Bloom is always ALiBi, which Petals folds into a 4D mask the sdpa path can't consume,
+            # so eager is required here (not merely the default) for correct results.
             config._attn_implementation = "eager"
         # Disable the legacy Megatron `pretraining_tp` slow path: it slices `dense.weight` /
         # `dense_4h_to_h.weight` by hand (bypassing the module forward), which is incompatible with
