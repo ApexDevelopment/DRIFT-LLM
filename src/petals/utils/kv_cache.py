@@ -118,10 +118,44 @@ class StandardGQACache(KVCacheStrategy):
     def update_cache(
         self, cache_tensors: Sequence[torch.Tensor], new_kvs: Sequence[torch.Tensor], prefix_length: int
     ) -> None:
-        _batch_size_times_num_kv_heads, head_dim, new_length = new_kvs[0].shape
+        new_length = new_kvs[0].shape[-1]  # key (BLOOM): [b*kv, k_head_dim, new_length]
         for cache_key, new_key in zip(cache_tensors[0::2], new_kvs[0::2]):
             new_key = new_key.view(*cache_key.shape[:3], new_length)
             cache_key[:, :, :, prefix_length:new_length] = new_key[:, :, :, prefix_length:new_length]
         for cache_value, new_value in zip(cache_tensors[1::2], new_kvs[1::2]):
-            new_value = new_value.view(*cache_value.shape[:2], new_length, head_dim)
+            # value head dim comes from the value cache tensor itself (may differ from the key's for MLA)
+            new_value = new_value.view(*cache_value.shape[:2], new_length, cache_value.shape[3])
             cache_value[:, :, prefix_length:new_length, :] = new_value[:, :, prefix_length:new_length, :]
+
+
+class MLACache(StandardGQACache):
+    """KV cache for DeepSeek-style Multi-head Latent Attention (MLA).
+
+    HF's DeepSeek attention *decompresses* the KV latent (``kv_b_proj``) before writing to the
+    cache, so Petals keeps the per-head BLOOM layout rather than caching the latent. MLA only
+    breaks one assumption of :class:`StandardGQACache`: keys and values have different head dims
+    (key ``= qk_nope_head_dim + qk_rope_head_dim``, value ``= v_head_dim``), so only the descriptor
+    sizing changes here -- ``select_layer_past`` / ``update_cache`` already handle asymmetric dims.
+
+    Caching the compressed latent instead (MLA's memory win) would need a custom attention kernel
+    and belongs with the paged-cache engine (Phase 5); this keeps DeepSeek correct and swarm-ready.
+    """
+
+    def get_cache_descriptors(
+        self,
+        batch_size: int,
+        max_length: int,
+        *,
+        dtype: torch.dtype,
+        devices: Sequence[torch.device],
+        shard_num_heads: Sequence[int],
+    ) -> Sequence[TensorDescriptor]:
+        key_head_dim = self.config.qk_nope_head_dim + self.config.qk_rope_head_dim
+        value_head_dim = self.config.v_head_dim
+        cache_tensors = []
+        for device, num_heads in zip(devices, shard_num_heads):
+            num_kv_heads = num_heads // self.config.num_key_value_groups
+            keys = TensorDescriptor((batch_size, num_kv_heads, key_head_dim, max_length), dtype=dtype, device=device)
+            values = TensorDescriptor((batch_size, num_kv_heads, max_length, value_head_dim), dtype=dtype, device=device)
+            cache_tensors.extend((keys, values))
+        return cache_tensors

@@ -31,23 +31,25 @@ class BloomLayoutCacheMixin:
     def _reorder_cache_from_bloom(
         self, key_value: Tuple[torch.Tensor], batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Derive the KV-head count from the tensor shapes (not config) so this stays correct when
-        # tensor parallelism gives a shard only a subset of the key/value heads.
+        # Derive head counts / dims from the tensor shapes (not config) so this stays correct when
+        # tensor parallelism gives a shard a subset of heads, and when the key and value head dims
+        # differ (MLA: key = qk_nope + qk_rope, value = v_head_dim).
         key_states, value_states = key_value
-        seq_length, head_dim = value_states.shape[1], value_states.shape[2]  # value: [batch * kv_heads, seq, head_dim]
+        seq_length, v_head_dim = value_states.shape[1], value_states.shape[2]  # value: [b*kv, seq, v_head_dim]
         kv_heads = value_states.shape[0] // batch_size
-        key_states = key_states.permute(0, 2, 1)  # key (BLOOM): [batch * kv_heads, head_dim, seq_length]
-        key_states = key_states.reshape(batch_size, kv_heads, seq_length, head_dim)
-        value_states = value_states.reshape(batch_size, kv_heads, seq_length, head_dim)
+        k_head_dim = key_states.shape[1]  # key (BLOOM): [b*kv, k_head_dim, seq]
+        key_states = key_states.permute(0, 2, 1)  # -> [b*kv, seq, k_head_dim]
+        key_states = key_states.reshape(batch_size, kv_heads, seq_length, k_head_dim)
+        value_states = value_states.reshape(batch_size, kv_heads, seq_length, v_head_dim)
         return key_states, value_states
 
     def _reorder_cache_to_bloom(
         self, key_value: Tuple[torch.Tensor], batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        key_states, value_states = key_value  # both: [batch, kv_heads, seq_length, head_dim]
-        kv_heads, seq_length, head_dim = key_states.shape[1], key_states.shape[2], key_states.shape[3]
-        value_states = value_states.reshape(batch_size * kv_heads, seq_length, head_dim)
-        key_states = key_states.reshape(batch_size * kv_heads, seq_length, head_dim)
+        key_states, value_states = key_value  # both: [batch, kv_heads, seq_length, head_dim] (dims may differ)
+        kv_heads, seq_length = key_states.shape[1], key_states.shape[2]
+        value_states = value_states.reshape(batch_size * kv_heads, seq_length, value_states.shape[3])
+        key_states = key_states.reshape(batch_size * kv_heads, seq_length, key_states.shape[3])
         key_states = key_states.permute(0, 2, 1)  # [batch * kv_heads, head_dim, seq_length]
         return key_states, value_states
 

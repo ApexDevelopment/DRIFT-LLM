@@ -1,4 +1,5 @@
 from petals.models.bloom import *
+from petals.models.deepseek_v3 import *
 from petals.models.falcon import *
 from petals.models.gemma2 import *
 from petals.models.gemma3 import *
