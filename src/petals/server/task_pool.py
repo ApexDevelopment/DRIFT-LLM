@@ -8,7 +8,7 @@ from queue import PriorityQueue
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import torch
-from hivemind import get_logger
+from hivemind.utils.logging import get_logger
 from hivemind.utils.mpfuture import ALL_STATES, MPFuture
 
 logger = get_logger(__name__)

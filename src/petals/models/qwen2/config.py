@@ -1,7 +1,7 @@
 import os
 from typing import Optional, Union
 
-from hivemind import get_logger
+from hivemind.utils.logging import get_logger
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
 

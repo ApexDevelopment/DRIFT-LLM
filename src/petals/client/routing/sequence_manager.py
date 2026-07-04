@@ -14,11 +14,13 @@ from weakref import WeakMethod
 import dijkstar
 import numpy as np
 import torch
-from hivemind import DHT, P2P, MSGPackSerializer, PeerID
+from hivemind import DHT
 from hivemind.dht.node import Blacklist
 from hivemind.moe.client.remote_expert_worker import RemoteExpertWorker
+from hivemind.p2p import P2P, PeerID
 from hivemind.proto import runtime_pb2
 from hivemind.utils.logging import get_logger
+from hivemind.utils.serializer import MSGPackSerializer
 
 from petals.client.config import ClientConfig
 from petals.client.routing.sequence_info import RemoteSequenceInfo

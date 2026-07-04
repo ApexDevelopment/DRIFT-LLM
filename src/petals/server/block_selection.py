@@ -1,7 +1,8 @@
 from typing import Dict, List
 
 import numpy as np
-from hivemind import PeerID, get_logger
+from hivemind.p2p import PeerID
+from hivemind.utils.logging import get_logger
 
 from petals.data_structures import RemoteModuleInfo, RemoteSpanInfo, ServerState
 from petals.utils.dht import compute_spans

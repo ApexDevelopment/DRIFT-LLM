@@ -1,7 +1,7 @@
 import os
 from typing import Optional, Union
 
-from hivemind import get_logger
+from hivemind.utils.logging import get_logger
 from transformers.models.falcon import FalconConfig
 from transformers.models.falcon.modeling_falcon import FalconAttention
 

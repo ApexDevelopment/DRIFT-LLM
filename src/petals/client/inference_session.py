@@ -7,10 +7,13 @@ import uuid
 from typing import AsyncIterator, List, Optional, Tuple
 
 import torch
-from hivemind import MSGPackSerializer, anext, deserialize_torch_tensor, get_logger, serialize_torch_tensor
+from hivemind.compression import deserialize_torch_tensor, serialize_torch_tensor
 from hivemind.moe.client.remote_expert_worker import RemoteExpertWorker
 from hivemind.p2p import P2P
 from hivemind.proto import runtime_pb2
+from hivemind.utils.asyncio import anext
+from hivemind.utils.logging import get_logger
+from hivemind.utils.serializer import MSGPackSerializer
 from hivemind.utils.tensor_descr import BatchTensorDescriptor
 
 from petals.client.config import ClientConfig

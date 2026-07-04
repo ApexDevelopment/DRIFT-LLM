@@ -1,7 +1,7 @@
 import os
 from typing import Optional, Union
 
-from hivemind import get_logger
+from hivemind.utils.logging import get_logger
 from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma2.modeling_gemma2 import Gemma2Attention
 

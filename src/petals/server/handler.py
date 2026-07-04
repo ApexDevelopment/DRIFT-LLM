@@ -10,22 +10,16 @@ from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Sequence,
 
 import torch
 from async_timeout import timeout
-from hivemind import (
-    DHT,
-    MSGPackSerializer,
-    P2PContext,
-    PeerID,
-    deserialize_tensor_stream,
-    deserialize_torch_tensor,
-    nested_flatten,
-    nested_pack,
-    serialize_torch_tensor,
-)
+from hivemind import DHT
+from hivemind.compression import deserialize_tensor_stream, deserialize_torch_tensor, serialize_torch_tensor
 from hivemind.moe.server.connection_handler import ConnectionHandler
+from hivemind.p2p import P2PContext, PeerID
 from hivemind.p2p.p2p_daemon import DEFAULT_MAX_MSG_SIZE
 from hivemind.proto import runtime_pb2
 from hivemind.utils.asyncio import amap_in_executor, anext
 from hivemind.utils.logging import get_logger
+from hivemind.utils.nested import nested_flatten, nested_pack
+from hivemind.utils.serializer import MSGPackSerializer
 from hivemind.utils.streaming import split_for_streaming
 
 import petals

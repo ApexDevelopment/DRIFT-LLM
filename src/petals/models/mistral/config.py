@@ -1,7 +1,7 @@
 import os
 from typing import Optional, Union
 
-from hivemind import get_logger
+from hivemind.utils.logging import get_logger
 from transformers.models.mistral import MistralConfig
 from transformers.models.mistral.modeling_mistral import MistralAttention
 

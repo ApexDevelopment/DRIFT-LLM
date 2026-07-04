@@ -24,7 +24,7 @@ from itertools import chain
 from typing import Sequence
 
 import torch
-from hivemind import TensorDescriptor
+from hivemind.utils.tensor_descr import TensorDescriptor
 from transformers import PretrainedConfig
 
 from petals.utils.tensor_parallel import PerDeviceTensors
@@ -156,6 +156,8 @@ class MLACache(StandardGQACache):
         for device, num_heads in zip(devices, shard_num_heads):
             num_kv_heads = num_heads // self.config.num_key_value_groups
             keys = TensorDescriptor((batch_size, num_kv_heads, key_head_dim, max_length), dtype=dtype, device=device)
-            values = TensorDescriptor((batch_size, num_kv_heads, max_length, value_head_dim), dtype=dtype, device=device)
+            values = TensorDescriptor(
+                (batch_size, num_kv_heads, max_length, value_head_dim), dtype=dtype, device=device
+            )
             cache_tensors.extend((keys, values))
         return cache_tensors

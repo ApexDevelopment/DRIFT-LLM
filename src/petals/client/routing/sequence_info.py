@@ -2,7 +2,7 @@ import dataclasses
 import time
 from typing import Iterable, List, Optional, Tuple
 
-from hivemind import get_logger
+from hivemind.utils.logging import get_logger
 
 from petals.data_structures import ModuleUID, RemoteModuleInfo, RemoteSpanInfo, ServerState
 from petals.utils.dht import compute_spans

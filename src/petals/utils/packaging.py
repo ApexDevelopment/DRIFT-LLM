@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Tuple
 
 import torch
-from hivemind import nested_flatten, nested_pack
+from hivemind.utils.nested import nested_flatten, nested_pack
 
 # TODO: Move functions to hivemind
 

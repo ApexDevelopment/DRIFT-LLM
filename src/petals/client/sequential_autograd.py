@@ -7,9 +7,9 @@ from collections import deque
 from typing import List, Optional, Sequence, Tuple
 
 import torch
-from hivemind import MSGPackSerializer
 from hivemind.moe.client.remote_expert_worker import RemoteExpertWorker
 from hivemind.utils.logging import get_logger
+from hivemind.utils.serializer import MSGPackSerializer
 
 from petals.client.remote_forward_backward import run_remote_backward, run_remote_forward
 from petals.client.routing import RemoteSequenceManager, maybe_log_traceback

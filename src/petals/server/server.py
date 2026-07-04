@@ -10,15 +10,17 @@ import threading
 import time
 from typing import Dict, List, Optional, Sequence, Union
 
-import hivemind
 import psutil
 import torch
 import torch.mps
-from hivemind import DHT, MAX_DHT_TIME_DISCREPANCY_SECONDS, BatchTensorDescriptor, get_dht_time
+from hivemind import DHT
 from hivemind.moe.server.layers import add_custom_models_from_file
 from hivemind.moe.server.runtime import Runtime
+from hivemind.p2p import PeerID
 from hivemind.proto.runtime_pb2 import CompressionType
 from hivemind.utils.logging import get_logger
+from hivemind.utils.tensor_descr import BatchTensorDescriptor
+from hivemind.utils.timed_storage import MAX_DHT_TIME_DISCREPANCY_SECONDS, get_dht_time
 from transformers import PretrainedConfig
 
 import petals
@@ -763,7 +765,7 @@ class ModuleAnnouncerThread(threading.Thread):
         if state == ServerState.OFFLINE:
             self.join()
 
-    def _ping_next_servers(self) -> Dict[hivemind.PeerID, float]:
+    def _ping_next_servers(self) -> Dict[PeerID, float]:
         module_infos = get_remote_module_infos(self.dht, self.next_uids, latest=True)
         middle_servers = {peer_id for info in module_infos[:-1] for peer_id in info.servers}
         pinged_servers = set(sample_up_to(middle_servers, self.max_pinged))

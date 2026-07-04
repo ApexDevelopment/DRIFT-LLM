@@ -3,8 +3,8 @@ from enum import Enum
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import pydantic.v1 as pydantic
-from hivemind import PeerID
 from hivemind.moe.expert_uid import ExpertUID
+from hivemind.p2p import PeerID
 
 ModuleUID = str
 UID_DELIMITER = "."  # delimits parts of one module uid, e.g. "bloom.transformer.h.4.self_attention"

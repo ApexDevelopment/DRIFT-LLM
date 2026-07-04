@@ -4,19 +4,18 @@ from collections import Counter
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import torch
-from hivemind import BatchTensorDescriptor, TensorDescriptor
 from hivemind.moe.expert_uid import ExpertUID
 from hivemind.moe.server.module_backend import ModuleBackend
 from hivemind.utils import get_logger
+from hivemind.utils.tensor_descr import BatchTensorDescriptor, TensorDescriptor
 from transformers import PretrainedConfig
-
-from petals.utils.tensor_parallel import TensorParallel
 
 from petals.data_structures import InferenceMetadata
 from petals.server.memory_cache import MemoryCache
 from petals.server.task_pool import PrioritizedTaskPool
 from petals.utils.kv_cache import StandardGQACache
 from petals.utils.misc import get_num_attention_heads, get_size_in_bytes, is_dummy
+from petals.utils.tensor_parallel import TensorParallel
 
 logger = get_logger(__name__)
 
