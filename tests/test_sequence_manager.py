@@ -3,7 +3,8 @@ import time
 
 import pytest
 import torch
-from hivemind import DHT, get_logger
+from hivemind import DHT
+from hivemind.utils.logging import get_logger
 
 from petals import AutoDistributedConfig
 from petals.client import RemoteSequenceManager, RemoteSequential

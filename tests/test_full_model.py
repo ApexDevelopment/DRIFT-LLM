@@ -2,7 +2,7 @@ import peft
 import pytest
 import torch
 import transformers
-from hivemind import get_logger
+from hivemind.utils.logging import get_logger
 
 from petals import AutoDistributedModelForCausalLM
 from test_utils import *

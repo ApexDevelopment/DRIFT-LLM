@@ -3,7 +3,7 @@ import sys
 
 import pytest
 import torch
-from hivemind import nested_compare, nested_flatten
+from hivemind.utils.nested import nested_compare, nested_flatten
 
 from petals import AutoDistributedConfig
 from petals.server.throughput import measure_compute_rps

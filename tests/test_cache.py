@@ -7,7 +7,7 @@ from typing import Optional
 import pytest
 import pytest_asyncio  # make sure the module exists; otherwise the test will be skipped
 import torch
-from hivemind import TensorDescriptor
+from hivemind.utils.tensor_descr import TensorDescriptor
 
 from petals.server.memory_cache import AllocationFailed, MemoryCache
 from petals.utils.misc import get_size_in_bytes

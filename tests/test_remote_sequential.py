@@ -1,8 +1,10 @@
 import pytest
 import torch
 import torch.nn.functional as F
-from hivemind import DHT, BatchTensorDescriptor, get_logger
+from hivemind import DHT
 from hivemind.proto import runtime_pb2
+from hivemind.utils.logging import get_logger
+from hivemind.utils.tensor_descr import BatchTensorDescriptor
 
 from petals import AutoDistributedConfig
 from petals.client import RemoteSequenceManager, RemoteSequential
