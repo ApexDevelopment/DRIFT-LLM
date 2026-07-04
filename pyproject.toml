@@ -31,6 +31,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    # Conservative upper caps: torch>=2.6 (latest 2.12) is a large jump whose serving-path
+    # effects need the CI swarm suite to validate, and bitsandbytes (GPU-only quantization)
+    # can't be exercised on the CPU dev box. Widen once validated on GPU/CI.
     "torch>=2.5,<2.6",
     "bitsandbytes>=0.45,<0.46",
     "accelerate>=1.0",
@@ -53,9 +56,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    # pytest-forked (used for per-test process isolation) mishandles teardown on pytest >=7,
-    # producing "previous item was not torn down properly" errors. Pin to the last pytest 6
-    # until the test suite is migrated off pytest-forked. asyncio pin follows pytest.
+    # These three + the `-p no:anyio` addopts below are one interlocked cluster pinned to the
+    # pytest 6 era. Blockers to bumping: (a) pytest-forked mishandles teardown on pytest >=7
+    # ("previous item was not torn down properly"); (b) tests/conftest.py overrides the
+    # pytest-asyncio `event_loop` fixture, which 0.23+ deprecated and 0.26 removed (needs a
+    # conftest rewrite); (c) the async/networking tests are only validated by the CI swarm
+    # suite, not the offline tests. Bumping pytest would also let us drop `-p no:anyio`.
     "pytest==6.2.5",
     "pytest-forked",
     "pytest-asyncio==0.16.0",
@@ -78,8 +84,9 @@ where = ["src"]
 version = { attr = "petals.__version__" }
 
 [tool.pytest.ini_options]
-# huggingface-hub 1.x pulls in anyio, whose pytest plugin autoloads but is unused here and
-# breaks collection on the pinned pytest. Disable it.
+# huggingface-hub 1.x pulls in anyio, whose pytest plugin autoloads but requires pytest >=7
+# (it imports _pytest.scope) and so breaks collection on the pinned pytest 6.2.5. Disable it;
+# this can be removed once the pytest pin in [dev] above is lifted.
 addopts = "-p no:anyio"
 
 [tool.black]
