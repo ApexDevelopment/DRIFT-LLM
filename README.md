@@ -8,7 +8,7 @@
     <br>
 </p>
 
-Generate text with distributed **Llama 3.1** (up to 405B), **Mixtral** (8x22B), **Falcon** (40B+) or **BLOOM** (176B) and fine‑tune them for your own tasks &mdash; right from your desktop computer or Google Colab:
+Generate text with distributed **Llama 3.1** (up to 405B), **Qwen 2.5/3**, **Gemma 2/3**, **Mistral**, **Mixtral** (8x22B), **DeepSeek‑V3** (MLA + MoE), **Falcon** (40B+) or **BLOOM** (176B) and fine‑tune them for your own tasks &mdash; right from your desktop computer or Google Colab:
 
 ```python
 from transformers import AutoTokenizer
@@ -45,10 +45,10 @@ As an example, here is how to host a part of [Llama 3.1 (405B) Instruct](https:/
 
 🦙 **Want to host Llama?** [Request access](https://huggingface.co/meta-llama/Meta-Llama-3.1-405B-Instruct) to its weights, then run `huggingface-cli login` in the terminal before loading the model.
 
-🐧 **Linux + Anaconda.** Run these commands for NVIDIA GPUs (or follow [this](https://github.com/bigscience-workshop/petals/wiki/Running-on-AMD-GPU) for AMD):
+🐧 **Linux + Anaconda.** Petals requires **Python 3.10+**. Run these commands for NVIDIA GPUs (or follow [this](https://github.com/bigscience-workshop/petals/wiki/Running-on-AMD-GPU) for AMD):
 
 ```bash
-conda install pytorch pytorch-cuda=11.7 -c pytorch -c nvidia
+conda install pytorch pytorch-cuda=12.4 -c pytorch -c nvidia
 pip install git+https://github.com/bigscience-workshop/petals
 python -m petals.cli.run_server meta-llama/Meta-Llama-3.1-405B-Instruct
 ```
