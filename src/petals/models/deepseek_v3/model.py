@@ -5,7 +5,12 @@ import torch
 import torch.nn as nn
 from hivemind.utils.logging import get_logger
 from transformers.modeling_outputs import BaseModelOutputWithPast
-from transformers.models.deepseek_v3 import DeepseekV3ForCausalLM, DeepseekV3ForSequenceClassification, DeepseekV3Model, DeepseekV3PreTrainedModel
+from transformers.models.deepseek_v3 import (
+    DeepseekV3ForCausalLM,
+    DeepseekV3ForSequenceClassification,
+    DeepseekV3Model,
+    DeepseekV3PreTrainedModel,
+)
 
 from petals.client.from_pretrained import FromPretrainedMixin
 from petals.client.lm_head import LMHead

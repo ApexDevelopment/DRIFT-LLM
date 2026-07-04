@@ -33,11 +33,10 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache-dependency-glob: "uv.lock"
       - name: Install dependencies
         run: |
-          uv venv --python ${{ matrix.python-version }}
-          uv pip install .[dev]
+          uv sync --extra dev --python ${{ matrix.python-version }}
       - name: Test
         run: |
           set -x  # Print executed commands

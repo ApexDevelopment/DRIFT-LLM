@@ -5,7 +5,12 @@ import torch
 import torch.nn as nn
 from hivemind.utils.logging import get_logger
 from transformers.modeling_outputs import BaseModelOutputWithPast
-from transformers.models.gemma2 import Gemma2ForCausalLM, Gemma2ForSequenceClassification, Gemma2Model, Gemma2PreTrainedModel
+from transformers.models.gemma2 import (
+    Gemma2ForCausalLM,
+    Gemma2ForSequenceClassification,
+    Gemma2Model,
+    Gemma2PreTrainedModel,
+)
 
 from petals.client.from_pretrained import FromPretrainedMixin
 from petals.client.lm_head import LMHead
