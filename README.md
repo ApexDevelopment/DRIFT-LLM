@@ -1,128 +1,104 @@
-<p align="center">
-    <img src="https://i.imgur.com/7eR7Pan.png" width="400"><br>
-    Run large language models at home, BitTorrent-style.<br>
-    Fine-tuning and inference <a href="https://github.com/bigscience-workshop/petals#benchmarks">up to 10x faster</a> than offloading
-    <br><br>
-    <a href="https://pypi.org/project/petals/"><img src="https://img.shields.io/pypi/v/petals.svg?color=green"></a>
-    <a href="https://discord.gg/tfHfe8B34k"><img src="https://img.shields.io/discord/865254854262652969?label=discord&logo=discord&logoColor=white"></a>
-    <br>
-</p>
+# Self-hosted distributed inference and fine-tuning of large language models
 
-Generate text with distributed **Llama 3.1** (up to 405B), **Qwen 2.5/3**, **Gemma 2/3**, **Mistral**, **Mixtral** (8x22B), **DeepSeek‑V3** (MLA + MoE), **Falcon** (40B+) or **BLOOM** (176B) and fine‑tune them for your own tasks &mdash; right from your desktop computer or Google Colab:
+Run large language models — **Llama 3.1** (up to 405B), **Qwen 2.5/3**, **Gemma 2/3**, **Mistral**, **Mixtral**, **DeepSeek-V3**, **Falcon**, or **BLOOM** — across a cluster of your own machines. Each machine serves a slice of the model's layers; a client stitches them together and runs inference or fine-tuning as if the whole model were local.
+
+This is a hard fork of [Petals](https://github.com/bigscience-workshop/petals), which is no longer maintained. It is modernized (current `transformers`, PyTorch, and `hivemind`) and refocused: instead of one large public swarm, it targets **private clusters** — an individual with a few GPUs, a lab, or a group of friends pooling their own machines. There is no public network to join and no central coordinator; you run the whole thing yourself.
+
+## How it works
+
+- The model is split into contiguous blocks of transformer layers.
+- Each **server** loads a few blocks (as many as its GPU or CPU can hold) and announces them to a private DHT.
+- A **client** loads only the input/output embeddings, finds a set of servers that together cover every block, and runs a forward or backward pass through them.
+
+You get the ergonomics of a local `transformers` model — full PyTorch access to logits and hidden states, custom sampling, and prompt-tuning — while the weights live across the cluster. The client holds almost nothing, so it runs comfortably on a laptop even for very large models.
+
+## Run your own cluster
+
+Every machine in a cluster must be able to reach the others over the network: a LAN, a VPN such as Tailscale or WireGuard, or public IPs with the chosen ports open.
+
+### 1. Start a bootstrap node
+
+Pick one machine to run a DHT bootstrap peer. Servers and clients use it to discover each other.
+
+```bash
+python -m petals.cli.run_dht --identity_path bootstrap.id \
+    --host_maddrs /ip4/0.0.0.0/tcp/31337
+```
+
+It logs its reachable address; note the full multiaddr, for example:
+
+```
+/ip4/203.0.113.10/tcp/31337/p2p/12D3KooW...
+```
+
+Use that value as the initial peer below. `--identity_path` keeps the peer ID stable across restarts, so the address does not change.
+
+### 2. Start servers
+
+On each machine with spare compute, host part of the model:
+
+```bash
+python -m petals.cli.run_server meta-llama/Llama-3.1-8B-Instruct \
+    --initial_peers /ip4/203.0.113.10/tcp/31337/p2p/12D3KooW... \
+    --num_blocks 8
+```
+
+Run this on as many machines as you like. Between them, the servers must cover all of the model's blocks — the client reports if any are missing. Use `--block_indices 0:16` to pin specific blocks instead of `--num_blocks`, and `--device cpu --torch_dtype float32` to serve on CPU.
+
+### 3. Connect a client
 
 ```python
 from transformers import AutoTokenizer
 from petals import AutoDistributedModelForCausalLM
 
-# Choose any model available at https://health.petals.dev
-model_name = "meta-llama/Meta-Llama-3.1-405B-Instruct"
+model_name = "meta-llama/Llama-3.1-8B-Instruct"
+initial_peers = ["/ip4/203.0.113.10/tcp/31337/p2p/12D3KooW..."]
 
-# Connect to a distributed network hosting model layers
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoDistributedModelForCausalLM.from_pretrained(model_name)
+model = AutoDistributedModelForCausalLM.from_pretrained(model_name, initial_peers=initial_peers)
 
-# Run the model as if it were on your computer
 inputs = tokenizer("A cat sat", return_tensors="pt")["input_ids"]
 outputs = model.generate(inputs, max_new_tokens=5)
-print(tokenizer.decode(outputs[0]))  # A cat sat on a mat...
+print(tokenizer.decode(outputs[0]))
 ```
 
-<p align="center">
-    🚀 &nbsp;<b><a href="https://colab.research.google.com/drive/1uCphNY7gfAUkdDrTx21dZZwCOUDCMPw8?usp=sharing">Try now in Colab</a></b>
-</p>
+Larger models simply need more machines (or bigger GPUs) among the servers; the client code does not change.
 
-🦙 **Want to run Llama?** [Request access](https://huggingface.co/meta-llama/Meta-Llama-3.1-405B-Instruct) to its weights, then run `huggingface-cli login` in the terminal before loading the model. Or just try it in our [chatbot app](https://chat.petals.dev).
+**Gated models.** For Llama and other gated weights, request access on the Hugging Face Hub and run `huggingface-cli login` on the servers and client before starting them.
 
-🔏 **Privacy.** Your data will be processed with the help of other people in the public swarm. Learn more about privacy [here](https://github.com/bigscience-workshop/petals/wiki/Security,-privacy,-and-AI-safety). For sensitive data, you can set up a [private swarm](https://github.com/bigscience-workshop/petals/wiki/Launch-your-own-swarm) among people you trust.
+## Installation
 
-💬 **Any questions?** Ping us in [our Discord](https://discord.gg/KdThf2bWVU)!
-
-## Connect your GPU and increase Petals capacity
-
-Petals is a community-run system &mdash; we rely on people sharing their GPUs. You can help serving one of the [available models](https://health.petals.dev) or host a new model from 🤗 [Model Hub](https://huggingface.co/models)!
-
-As an example, here is how to host a part of [Llama 3.1 (405B) Instruct](https://huggingface.co/meta-llama/Meta-Llama-3.1-405B-Instruct) on your GPU:
-
-🦙 **Want to host Llama?** [Request access](https://huggingface.co/meta-llama/Meta-Llama-3.1-405B-Instruct) to its weights, then run `huggingface-cli login` in the terminal before loading the model.
-
-🐧 **Linux + Anaconda.** Petals requires **Python 3.10+**. Run these commands for NVIDIA GPUs (or follow [this](https://github.com/bigscience-workshop/petals/wiki/Running-on-AMD-GPU) for AMD):
+Requires **Python 3.10+**. The project is managed with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-conda install pytorch pytorch-cuda=12.4 -c pytorch -c nvidia
-pip install git+https://github.com/bigscience-workshop/petals
-python -m petals.cli.run_server meta-llama/Meta-Llama-3.1-405B-Instruct
+git clone https://github.com/ApexDevelopment/petals
+cd petals
+uv sync --extra dev
 ```
 
-🪟 **Windows + WSL.** Follow [this guide](https://github.com/bigscience-workshop/petals/wiki/Run-Petals-server-on-Windows) on our Wiki.
-
-🐋 **Docker.** Run our [Docker](https://www.docker.com) image for NVIDIA GPUs (or follow [this](https://github.com/bigscience-workshop/petals/wiki/Running-on-AMD-GPU) for AMD):
+Or install into an existing environment with pip:
 
 ```bash
-sudo docker run -p 31330:31330 --ipc host --gpus all --volume petals-cache:/cache --rm \
-    learningathome/petals:main \
-    python -m petals.cli.run_server --port 31330 meta-llama/Meta-Llama-3.1-405B-Instruct
+pip install git+https://github.com/ApexDevelopment/petals
 ```
 
-🍏 **macOS + Apple M1/M2 GPU.** Install [Homebrew](https://brew.sh/), then run these commands:
+For NVIDIA GPUs, install a CUDA build of PyTorch (for example `conda install pytorch pytorch-cuda=12.4 -c pytorch -c nvidia`) before installing. A `Dockerfile` is included for running servers in a container.
 
-```bash
-brew install python
-python3 -m pip install git+https://github.com/bigscience-workshop/petals
-python3 -m petals.cli.run_server meta-llama/Meta-Llama-3.1-405B-Instruct
-```
+## Supported models
 
-<p align="center">
-    📚 &nbsp;<b><a href="https://github.com/bigscience-workshop/petals/wiki/FAQ:-Frequently-asked-questions#running-a-server">Learn more</a></b> (how to use multiple GPUs, start the server on boot, etc.)
-</p>
+Dense GQA models — **Llama 3.x**, **Qwen 2.5/3**, **Gemma 2/3**, and **Mistral** — plus **Mixtral** (mixture of experts), **DeepSeek-V3** (multi-head latent attention + MoE), **Falcon**, and **BLOOM**. Any checkpoint in one of these architectures on the Hugging Face Hub should work.
 
-🔒 **Security.** Hosting a server does not allow others to run custom code on your computer. Learn more [here](https://github.com/bigscience-workshop/petals/wiki/Security,-privacy,-and-AI-safety).
+## Security
 
-💬 **Any questions?** Ping us in [our Discord](https://discord.gg/X7DgtxgMhc)!
+Running a server does not let others execute arbitrary code on your machine — a server only runs the model's forward and backward pass on the tensors it receives. Still, run a cluster only among machines and people you trust, and keep the DHT port off the public internet unless you intend it to be reachable.
 
-🏆 **Thank you!** Once you load and host 10+ blocks, we can show your name or link on the [swarm monitor](https://health.petals.dev) as a way to say thanks. You can specify them with `--public_name YOUR_NAME`.
+## Contributing
 
-## How does it work?
+Issues and pull requests are welcome on this repository. For advanced topics that still apply from the upstream project — using multiple GPUs, running custom architectures, or AMD GPU setup — the original [Petals wiki](https://github.com/bigscience-workshop/petals/wiki) remains a useful reference.
 
-- You load a small part of the model, then join a [network](https://health.petals.dev) of people serving the other parts. Single‑batch inference runs at up to **6 tokens/sec** for **Llama 2** (70B) and up to **4 tokens/sec** for **Falcon** (180B) — enough for [chatbots](https://chat.petals.dev) and interactive apps.
-- You can employ any fine-tuning and sampling methods, execute custom paths through the model, or see its hidden states. You get the comforts of an API with the flexibility of **PyTorch** and **🤗 Transformers**.
+## Attribution
 
-<p align="center">
-    <img src="https://i.imgur.com/RTYF3yW.png" width="800">
-</p>
-
-<p align="center">
-    📜 &nbsp;<b><a href="https://arxiv.org/pdf/2209.01188.pdf">Read paper</a></b>
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-    📚 &nbsp;<b><a href="https://github.com/bigscience-workshop/petals/wiki/FAQ:-Frequently-asked-questions">See FAQ</a></b>
-</p>
-
-## 📚 Tutorials, examples, and more
-
-Basic tutorials:
-
-- Getting started: [tutorial](https://colab.research.google.com/drive/1uCphNY7gfAUkdDrTx21dZZwCOUDCMPw8?usp=sharing)
-- Prompt-tune Llama-65B for text semantic classification: [tutorial](https://colab.research.google.com/github/bigscience-workshop/petals/blob/main/examples/prompt-tuning-sst2.ipynb)
-- Prompt-tune BLOOM to create a personified chatbot: [tutorial](https://colab.research.google.com/github/bigscience-workshop/petals/blob/main/examples/prompt-tuning-personachat.ipynb)
-
-Useful tools:
-
-- [Chatbot web app](https://chat.petals.dev) (connects to Petals via an HTTP/WebSocket endpoint): [source code](https://github.com/petals-infra/chat.petals.dev)
-- [Monitor](https://health.petals.dev) for the public swarm: [source code](https://github.com/petals-infra/health.petals.dev)
-
-Advanced guides:
-
-- Launch a private swarm: [guide](https://github.com/bigscience-workshop/petals/wiki/Launch-your-own-swarm)
-- Run a custom model: [guide](https://github.com/bigscience-workshop/petals/wiki/Run-a-custom-model-with-Petals)
-
-### Benchmarks
-
-Please see **Section 3.3** of our [paper](https://arxiv.org/pdf/2209.01188.pdf).
-
-### 🛠️ Contributing
-
-Please see our [FAQ](https://github.com/bigscience-workshop/petals/wiki/FAQ:-Frequently-asked-questions#contributing) on contributing.
-
-### 📜 Citations
+This project is a hard fork of **Petals**, created by the [BigScience](https://bigscience.huggingface.co/) research workshop and collaborators. All credit for the original design and research belongs to its authors. If you build on this work, please cite the original papers:
 
 Alexander Borzunov, Dmitry Baranchuk, Tim Dettmers, Max Ryabinin, Younes Belkada, Artem Chumachenko, Pavel Samygin, and Colin Raffel.
 [Petals: Collaborative Inference and Fine-tuning of Large Models.](https://arxiv.org/abs/2209.01188)
@@ -154,12 +130,3 @@ _Advances in Neural Information Processing Systems_ 36 (2023).
   url = {https://arxiv.org/abs/2312.08361}
 }
 ```
-
---------------------------------------------------------------------------------
-
-<p align="center">
-    This project is a part of the <a href="https://bigscience.huggingface.co/">BigScience</a> research workshop.
-</p>
-<p align="center">
-    <img src="https://petals.dev/bigscience.png" width="150">
-</p>
