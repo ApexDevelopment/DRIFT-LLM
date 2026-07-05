@@ -76,7 +76,14 @@ def convert_block(
 
 def quantize_module(model: nn.Module, *, quant_type: QuantType) -> nn.Module:
     # Import bitsandbytes only when necessary, so Petals runs on platforms not supported by bitsandbytes
-    import bitsandbytes as bnb
+    try:
+        import bitsandbytes as bnb
+    except ImportError as e:
+        raise ImportError(
+            f"bitsandbytes is required for {quant_type.name} quantization but could not be imported. "
+            f"Quantization is only supported on CUDA GPUs; on other devices (Intel XPU, Apple MPS, CPU) "
+            f"run the server with --quant_type none."
+        ) from e
 
     for n, module in model.named_children():
         if len(list(module.children())) > 0:

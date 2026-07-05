@@ -31,10 +31,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    # Conservative upper caps: torch>=2.6 (latest 2.12) is a large jump whose serving-path
-    # effects need the CI swarm suite to validate, and bitsandbytes (GPU-only quantization)
-    # can't be exercised on the CPU dev box. Widen once validated on GPU/CI.
-    "torch>=2.5,<2.6",
+    # torch 2.6 is the floor for Intel XPU: it's the earliest torch with prebuilt +xpu wheels
+    # (download.pytorch.org/whl/xpu), and XPU block correctness is validated on it
+    # (tests/test_device_portability.py). Upper cap stays conservative pending CI-swarm validation
+    # of a larger jump (latest is 2.12). bitsandbytes (CUDA-only quantization) is optional at
+    # runtime -- only imported for --quant_type int8/nf4 -- so non-CUDA backends don't need it.
+    "torch>=2.6,<2.7",
     "bitsandbytes>=0.45,<0.46",
     "accelerate>=1.0",
     "huggingface-hub>=0.30",

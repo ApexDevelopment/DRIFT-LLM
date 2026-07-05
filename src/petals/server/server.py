@@ -10,9 +10,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Sequence, Union
 
-import psutil
 import torch
-import torch.mps
 from hivemind import DHT
 from hivemind.moe.server.layers import add_custom_models_from_file
 from hivemind.moe.server.runtime import Runtime
@@ -37,6 +35,14 @@ from petals.server.throughput import get_dtype_name, get_server_throughput
 from petals.utils.auto_config import AutoDistributedConfig
 from petals.utils.convert_block import QuantType, check_device_balance, convert_block
 from petals.utils.dht import declare_active_modules, get_remote_module_infos
+from petals.utils.hardware import (
+    auto_detect_device,
+    empty_device_cache,
+    get_device_total_memory,
+    get_memory_stats,
+    is_accelerator,
+    normalize_device,
+)
 from petals.utils.misc import get_size_in_bytes
 from petals.utils.ping import PingAggregator
 from petals.utils.random import sample_up_to
@@ -166,15 +172,8 @@ class Server:
         self.should_validate_reachability = not skip_reachability_check and initial_peers == PUBLIC_INITIAL_PEERS
 
         if device is None:
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
-        device = torch.device(device)
-        if device.type == "cuda" and device.index is None:
-            device = torch.device(device.type, index=0)
+            device = auto_detect_device()
+        device = normalize_device(torch.device(device))
         self.device = device
 
         torch_dtype = resolve_block_dtype(self.block_config, DTYPE_MAP[torch_dtype])
@@ -281,17 +280,15 @@ class Server:
         self.stop = threading.Event()
 
     def _choose_num_blocks(self) -> int:
-        assert self.device.type in ("cuda", "mps"), (
+        assert is_accelerator(self.device), (
             "GPU is not available. If you want to run a CPU-only server, please specify --num_blocks. "
-            "CPU-only servers in the public swarm are discouraged since they are much slower"
+            "CPU-only servers are much slower, so this must be requested explicitly."
         )
         num_devices = len(self.tensor_parallel_devices) if self.tensor_parallel_devices else 1
 
         if num_devices > 1:
             assert self.device.type == "cuda", f"Tensor parallelism is not supported on {self.device.type.upper()}"
-            memory_per_device = tuple(
-                torch.cuda.get_device_properties(device).total_memory for device in self.tensor_parallel_devices
-            )
+            memory_per_device = tuple(get_device_total_memory(device) for device in self.tensor_parallel_devices)
             total_memory = min(memory_per_device) * num_devices
             if max(memory_per_device) / min(memory_per_device) > 1.5:
                 raise ValueError(
@@ -299,10 +296,8 @@ class Server:
                     "Please launch individual servers on each GPU or set --num_blocks manually to "
                     "override this exception."
                 )
-        elif self.device.type == "cuda":
-            total_memory = torch.cuda.get_device_properties(self.device).total_memory
         else:
-            total_memory = psutil.virtual_memory().total
+            total_memory = get_device_total_memory(self.device)
 
         gib = 1024**3
         # Estimate of GPU memory used in rpc_backward (2 GiB for BLOOM, proportional for other models)
@@ -395,18 +390,17 @@ class Server:
         self.module_container = None
         gc.collect()  # In particular, this closes unused file descriptors
 
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
+        if is_accelerator(self.device):
+            empty_device_cache(self.device)
 
-            allocated_vram = torch.cuda.memory_allocated(self.device)
-            reserved_vram = torch.cuda.memory_reserved(self.device)
-            gib = 1024**3
-            logger.info(
-                f"Cleaning up, left {allocated_vram / gib:.1f} GiB allocated memory, "
-                f"{reserved_vram / gib:.1f} GiB reserved memory"
-            )
-        elif self.device.type == "mps":
-            torch.mps.empty_cache()
+            memory_stats = get_memory_stats(self.device)
+            if memory_stats is not None:
+                allocated_vram, reserved_vram = memory_stats
+                gib = 1024**3
+                logger.info(
+                    f"Cleaning up, left {allocated_vram / gib:.1f} GiB allocated memory, "
+                    f"{reserved_vram / gib:.1f} GiB reserved memory"
+                )
 
     def _choose_blocks(self) -> List[int]:
         if self.strict_block_indices is not None:

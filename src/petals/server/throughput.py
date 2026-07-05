@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Dict, Optional, Sequence, Union
 
 import torch
-import torch.mps
 from hivemind.utils.logging import get_logger
 from transformers import PretrainedConfig
 
 from petals.server.block_utils import get_model_block, resolve_block_dtype
 from petals.utils.convert_block import QuantType, convert_block
 from petals.utils.disk_cache import DEFAULT_CACHE_DIR
+from petals.utils.hardware import get_device_name, synchronize_device
 from petals.utils.misc import DUMMY_KEY_PAST
 
 logger = get_logger(__name__)
@@ -216,12 +216,12 @@ def measure_compute_rps(
             return outputs[1] if inference else None
 
         cache = step(cache)
-        synchronize(device)
+        synchronize_device(device)
 
         start_time = time.perf_counter()
         for _ in range(n_steps):
             cache = step(cache)
-        synchronize(device)
+        synchronize_device(device)
         elapsed = time.perf_counter() - start_time
         device_rps = n_steps * n_tokens / elapsed
 
@@ -235,17 +235,6 @@ def measure_compute_rps(
         f"({n_tokens} tokens/batch, {devices_repr}, {get_dtype_name(dtype, quant_type)})"
     )
     return device_rps
-
-
-def synchronize(device: torch.device):
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    elif device.type == "mps":
-        torch.mps.synchronize()
-
-
-def get_device_name(device: torch.device) -> str:
-    return f"{torch.cuda.get_device_name(device)} GPU" if device.type == "cuda" else device.type.upper()
 
 
 def get_dtype_name(dtype: torch.dtype, quant_type: QuantType) -> str:

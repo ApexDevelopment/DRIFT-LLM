@@ -43,7 +43,7 @@ python -m petals.cli.run_server meta-llama/Llama-3.1-8B-Instruct \
     --num_blocks 8
 ```
 
-Run this on as many machines as you like. Between them, the servers must cover all of the model's blocks — the client reports if any are missing. Use `--block_indices 0:16` to pin specific blocks instead of `--num_blocks`, and `--device cpu --torch_dtype float32` to serve on CPU.
+Run this on as many machines as you like. Between them, the servers must cover all of the model's blocks — the client reports if any are missing. Use `--block_indices 0:16` to pin specific blocks instead of `--num_blocks`, and `--device cpu --torch_dtype float32` to serve on CPU. By default a server picks the best available accelerator — NVIDIA CUDA, Intel XPU, or Apple MPS — falling back to CPU; pass `--device` to choose explicitly (e.g. `--device xpu`).
 
 ### 3. Connect a client
 
@@ -83,6 +83,8 @@ pip install git+https://github.com/ApexDevelopment/petals
 ```
 
 For NVIDIA GPUs, install a CUDA build of PyTorch (for example `conda install pytorch pytorch-cuda=12.4 -c pytorch -c nvidia`) before installing. A `Dockerfile` is included for running servers in a container.
+
+For **Intel GPUs** (Arc, or the integrated graphics on recent Core chips), install an XPU build of PyTorch — `pip install torch --index-url https://download.pytorch.org/whl/xpu` — with the Intel GPU driver and Level-Zero runtime present. Servers then run with `--device xpu`. Quantization (`--quant_type int8/nf4`) is CUDA-only; on XPU, MPS, or CPU run with `--quant_type none` (the default off CUDA).
 
 ## Supported models
 
