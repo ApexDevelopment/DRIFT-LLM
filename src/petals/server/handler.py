@@ -98,7 +98,11 @@ class TransformerConnectionHandler(ConnectionHandler):
             self.join(self.shutdown_timeout)
             if self.is_alive():
                 logger.warning(f"{self.__class__.__name__} failed to shut down gracefully, sending SIGTERM")
-                self.terminate()
+                # On Windows (thread-mode) terminate() is a no-op; the join above is the best effort.
+                try:
+                    self.terminate()
+                except Exception:
+                    pass
 
     async def _gather_inputs(
         self, requests: AsyncIterator[runtime_pb2.ExpertRequest], context: P2PContext

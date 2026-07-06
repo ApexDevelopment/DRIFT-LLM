@@ -1,13 +1,13 @@
-import fcntl
 import os
 import shutil
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Union
 
 import huggingface_hub
 from hivemind.utils.logging import get_logger
 from huggingface_hub.utils import EntryNotFoundError, LocalEntryNotFoundError
+
+from petals.utils.file_lock import file_lock
 
 logger = get_logger(__name__)
 
@@ -44,27 +44,18 @@ def get_file_from_repo(
         return None
 
 
-@contextmanager
-def _blocks_lock(cache_dir: Optional[str], mode: int):
-    if cache_dir is None:
-        cache_dir = DEFAULT_CACHE_DIR
-    lock_path = Path(cache_dir, BLOCKS_LOCK_FILE)
-
-    os.makedirs(lock_path.parent, exist_ok=True)
-    with open(lock_path, "wb+") as lock_fd:
-        fcntl.flock(lock_fd.fileno(), mode)
-        # The OS will release the lock when lock_fd is closed or the process is killed
-        yield
-
-
 def allow_cache_reads(cache_dir: Optional[str]):
     """Allows simultaneous reads, guarantees that blocks won't be removed along the way (shared lock)"""
-    return _blocks_lock(cache_dir, fcntl.LOCK_SH)
+    if cache_dir is None:
+        cache_dir = DEFAULT_CACHE_DIR
+    return file_lock(Path(cache_dir, BLOCKS_LOCK_FILE), exclusive=False)
 
 
 def allow_cache_writes(cache_dir: Optional[str]):
     """Allows saving new blocks and removing the old ones (exclusive lock)"""
-    return _blocks_lock(cache_dir, fcntl.LOCK_EX)
+    if cache_dir is None:
+        cache_dir = DEFAULT_CACHE_DIR
+    return file_lock(Path(cache_dir, BLOCKS_LOCK_FILE), exclusive=True)
 
 
 def free_disk_space_for(

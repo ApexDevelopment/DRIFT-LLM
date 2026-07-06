@@ -43,7 +43,9 @@ dependencies = [
     "tokenizers>=0.21",
     "transformers>=5.13,<5.14",  # if changed, update the version assert in petals/__init__.py
     "speedtest-cli>=2.1.3",
-    "hivemind>=1.1.12,<1.2",  # PyPI release: ships prebuilt p2pd wheels (no Go/sdist build), numpy-2 ready
+    # PyPI hivemind wheels are Linux/macOS only.  On Windows install the patched wheel produced by
+    # scripts/build_hivemind_windows.py before `pip install -e .` (see README Windows section).
+    "hivemind>=1.1.12,<1.2; sys_platform != 'win32'",
     "humanfriendly",
     "async-timeout>=4.0.2",
     "cpufeature>=0.2.0; platform_machine == 'x86_64'",

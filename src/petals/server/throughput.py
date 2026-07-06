@@ -1,4 +1,3 @@
-import fcntl
 import json
 import math
 import multiprocessing as mp
@@ -15,6 +14,7 @@ from transformers import PretrainedConfig
 from petals.server.block_utils import get_model_block, resolve_block_dtype
 from petals.utils.convert_block import QuantType, convert_block
 from petals.utils.disk_cache import DEFAULT_CACHE_DIR
+from petals.utils.file_lock import file_lock
 from petals.utils.hardware import get_device_name, synchronize_device
 from petals.utils.misc import DUMMY_KEY_PAST
 
@@ -56,12 +56,8 @@ def get_server_throughput(
     cache_path = Path(cache_dir, "throughput_v5.json")
 
     # We use the system-wide lock since only one process at a time can measure the host throughput
-    os.makedirs(lock_path.parent, exist_ok=True)
-    with open(lock_path, "wb+") as lock_fd:
-        logger.info("Loading throughput info")
-        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
-        # The OS will release the lock when lock_fd is closed or the process is killed
-
+    logger.info("Loading throughput info")
+    with file_lock(lock_path, exclusive=True):
         cache_key = f"model_{model_name}"
         cache_key += f"_device_{get_device_name(device).replace(' ', '_')}"
         cache_key += f"_dtype_{get_dtype_name(dtype, quant_type)}"
