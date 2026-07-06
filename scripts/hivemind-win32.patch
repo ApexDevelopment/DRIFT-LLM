@@ -1,0 +1,650 @@
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/hivemind/dht/dht.py b/hivemind/dht/dht.py
+--- a/hivemind/dht/dht.py	2026-01-03 02:41:31.000000000 -0500
++++ b/hivemind/dht/dht.py	2026-07-06 15:51:17.624893000 -0400
+@@ -4,6 +4,8 @@
+ import multiprocessing as mp
+ import os
+ import signal
++import sys
++import threading
+ from functools import partial
+ from typing import Awaitable, Callable, Iterable, List, Optional, Sequence, TypeVar, Union
+ 
+@@ -13,13 +15,14 @@
+ from hivemind.p2p import P2P, PeerID
+ from hivemind.utils import MPFuture, get_logger, switch_to_uvloop
+ from hivemind.utils.multiaddr import Multiaddr
++from hivemind.utils.process_compat import MPProcessBase
+ from hivemind.utils.timed_storage import DHTExpiration, ValueWithExpiration
+ 
+ logger = get_logger(__name__)
+ ReturnType = TypeVar("ReturnType")
+ 
+ 
+-class DHT(mp.context.ForkProcess):
++class DHT(MPProcessBase):
+     """
+     A high-level interface to a hivemind DHT that runs a single DHT node in a background process.
+     * hivemind servers periodically announce their experts via declare_experts (dht_handler.py)
+@@ -91,11 +94,26 @@
+ 
+         loop = switch_to_uvloop()
+         pipe_semaphore = asyncio.Semaphore(value=0)
+-        loop.add_reader(self._inner_pipe.fileno(), pipe_semaphore.release)
++
++        if sys.platform != "win32":
++            # POSIX: asyncio can watch pipe file-descriptors directly.
++            loop.add_reader(self._inner_pipe.fileno(), pipe_semaphore.release)
++        else:
++            # Windows: asyncio cannot poll pipe fds; use a tiny watcher thread instead.
++            def _pipe_watcher():
++                while True:
++                    try:
++                        if self._inner_pipe.poll(0.05):
++                            loop.call_soon_threadsafe(pipe_semaphore.release)
++                    except (OSError, EOFError):
++                        break
++
++            threading.Thread(target=_pipe_watcher, daemon=True, name="dht-pipe-watcher").start()
+ 
+         async def _run():
+-            # Set SIG_IGN handler to SIGINT
+-            signal.signal(signal.SIGINT, signal.SIG_IGN)
++            # Set SIG_IGN handler to SIGINT (only valid in main thread)
++            if threading.current_thread() is threading.main_thread():
++                signal.signal(signal.SIGINT, signal.SIG_IGN)
+ 
+             try:
+                 if self._daemon_listen_maddr is not None:
+@@ -158,11 +176,32 @@
+             self.join(self.shutdown_timeout)
+             if self.is_alive():
+                 logger.warning("DHT did not shut down within the grace period; terminating it the hard way")
+-                self.terminate()
++                try:
++                    self.terminate()
++                except Exception:
++                    pass
+ 
+     async def _shutdown(self):
+         await self._node.shutdown()
+ 
++    def _assert_not_in_dht(self) -> None:
++        """Guard: raise if called from inside the DHT background worker (would deadlock)."""
++        if sys.platform == "win32":
++            # Thread-mode: compare thread identity.
++            assert threading.current_thread() is not self, (
++                "calling *external* DHT interface from inside DHT will result in a deadlock"
++            )
++        else:
++            assert os.getpid() != self.pid, (
++                "calling *external* DHT interface from inside DHT will result in a deadlock"
++            )
++
++    def _is_inside_dht(self) -> bool:
++        """Return True if called from inside the DHT background worker."""
++        if sys.platform == "win32":
++            return threading.current_thread() is self
++        return os.getpid() == self.pid
++
+     def get(
+         self, key: DHTKey, latest: bool = False, return_future: bool = False, **kwargs
+     ) -> Union[Optional[ValueWithExpiration[DHTValue]], MPFuture]:
+@@ -174,7 +213,7 @@
+         :param kwargs: parameters forwarded to DHTNode.get_many_by_id
+         :returns: (value, expiration time); if value was not found, returns None
+         """
+-        assert os.getpid() != self.pid, "calling *external* DHT interface from inside DHT will result in a deadlock"
++        self._assert_not_in_dht()
+         future = MPFuture()
+         self._outer_pipe.send(("_get", [], dict(key=key, latest=latest, future=future, **kwargs)))
+         return future if return_future else future.result()
+@@ -208,7 +247,7 @@
+         :param return_future: if False (default), return when finished. Otherwise return MPFuture and run in background.
+         :returns: True if store succeeds, False if it fails (due to no response or newer value)
+         """
+-        assert os.getpid() != self.pid, "calling *external* DHT interface from inside DHT will result in a deadlock"
++        self._assert_not_in_dht()
+         future = MPFuture()
+         self._outer_pipe.send(
+             (
+@@ -253,7 +292,7 @@
+           or use asyncio.get_event_loop().run_in_executor(...) to prevent coroutine from blocking background DHT tasks
+         :note: when run_coroutine is called with return_future=False, MPFuture can be cancelled to interrupt the task.
+         """
+-        assert os.getpid() != self.pid, "calling *external* DHT interface from inside DHT will result in a deadlock"
++        self._assert_not_in_dht()
+         future = MPFuture()
+         self._outer_pipe.send(("_run_coroutine", [], dict(coro=coro, future=future)))
+         return future if return_future else future.result()
+@@ -283,10 +322,10 @@
+     @property
+     def peer_id(self) -> PeerID:
+         if self._peer_id is None:
+-            if os.getpid() == self.pid:
++            if self._is_inside_dht():
+                 self._peer_id = self._node.peer_id
+             else:
+-                # note: we cannot run_coroutine from the same pid because it would deadlock the event loop
++                # note: we cannot run_coroutine from the same process/thread because it would deadlock the event loop
+                 self._peer_id = self.run_coroutine(DHT._get_peer_id)
+         return self._peer_id
+ 
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/hivemind/moe/server/connection_handler.py b/hivemind/moe/server/connection_handler.py
+--- a/hivemind/moe/server/connection_handler.py	2026-01-03 02:41:31.000000000 -0500
++++ b/hivemind/moe/server/connection_handler.py	2026-07-06 15:36:47.001467700 -0400
+@@ -1,5 +1,7 @@
+ import asyncio
+ import multiprocessing as mp
++import sys
++import threading
+ from typing import AsyncIterator, Dict, Iterable, List, Optional, Tuple, Union
+ 
+ import torch
+@@ -13,13 +15,14 @@
+ from hivemind.proto import runtime_pb2
+ from hivemind.utils import MPFuture, MSGPackSerializer, as_aiter, get_logger, nested_flatten
+ from hivemind.utils.asyncio import amap_in_executor, switch_to_uvloop
++from hivemind.utils.process_compat import MPProcessBase
+ from hivemind.utils.streaming import split_for_streaming
+ from hivemind.utils.tensor_descr import BatchTensorDescriptor
+ 
+ logger = get_logger(__name__)
+ 
+ 
+-class ConnectionHandler(mp.context.ForkProcess, ServicerBase):
++class ConnectionHandler(MPProcessBase, ServicerBase):
+     """
+     A process that accepts incoming requests to experts and submits them into the corresponding TaskPool.
+ 
+@@ -52,7 +55,21 @@
+         torch.set_num_threads(1)
+         loop = switch_to_uvloop()
+         stop = asyncio.Event()
+-        loop.add_reader(self._inner_pipe.fileno(), stop.set)
++
++        if sys.platform != "win32":
++            loop.add_reader(self._inner_pipe.fileno(), stop.set)
++        else:
++            def _pipe_watcher():
++                while not stop.is_set():
++                    try:
++                        if self._inner_pipe.poll(0.05):
++                            loop.call_soon_threadsafe(stop.set)
++                            break
++                    except (OSError, EOFError):
++                        loop.call_soon_threadsafe(stop.set)
++                        break
++
++            threading.Thread(target=_pipe_watcher, daemon=True, name="handler-pipe-watcher").start()
+ 
+         async def _run():
+             try:
+@@ -93,7 +110,10 @@
+                 logger.warning(
+                     "ConnectionHandler did not shut down within the grace period; terminating it the hard way"
+                 )
+-                self.terminate()
++                try:
++                    self.terminate()
++                except Exception:
++                    pass
+         else:
+             logger.warning("ConnectionHandler shutdown had no effect, the process is already dead")
+ 
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/hivemind/moe/server/task_pool.py b/hivemind/moe/server/task_pool.py
+--- a/hivemind/moe/server/task_pool.py	2026-01-03 02:41:31.000000000 -0500
++++ b/hivemind/moe/server/task_pool.py	2026-07-06 15:36:57.667285800 -0400
+@@ -17,12 +17,13 @@
+ 
+ from hivemind.utils import get_logger
+ from hivemind.utils.mpfuture import InvalidStateError, MPFuture
++from hivemind.utils.process_compat import MPProcessBase
+ 
+ logger = get_logger(__name__)
+ Task = namedtuple("Task", ("future", "args"))
+ 
+ 
+-class TaskPoolBase(mp.context.ForkProcess, metaclass=ABCMeta):
++class TaskPoolBase(MPProcessBase, metaclass=ABCMeta):
+     """A pool that accepts tasks and forms batches for parallel processing, interacts with Runtime"""
+ 
+     def __init__(self, process_func: callable, daemon=True, **kwargs):
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/hivemind/p2p/p2p_daemon.py b/hivemind/p2p/p2p_daemon.py
+--- a/hivemind/p2p/p2p_daemon.py	2026-01-03 02:41:31.000000000 -0500
++++ b/hivemind/p2p/p2p_daemon.py	2026-07-06 15:38:03.285683500 -0400
+@@ -4,6 +4,8 @@
+ import os
+ import platform
+ import secrets
++import socket
++import sys
+ import warnings
+ from collections.abc import AsyncIterable as AsyncIterableABC
+ from contextlib import closing, suppress
+@@ -29,7 +31,14 @@
+ logger = get_logger(__name__)
+ 
+ 
+-P2PD_FILENAME = "p2pd"
++P2PD_FILENAME = "p2pd.exe" if sys.platform == "win32" else "p2pd"
++
++
++def _free_tcp_port() -> int:
++    """Bind a socket on :0, capture the assigned port, close the socket, return the port."""
++    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
++        s.bind(("127.0.0.1", 0))
++        return s.getsockname()[1]
+ 
+ 
+ @dataclass(frozen=True)
+@@ -162,9 +171,16 @@
+         with path(cli, P2PD_FILENAME) as p:
+             p2pd_path = p
+ 
+-        socket_uid = secrets.token_urlsafe(8)
+-        self._daemon_listen_maddr = Multiaddr(cls._UNIX_SOCKET_PREFIX + f"p2pd-{socket_uid}.sock")
+-        self._client_listen_maddr = Multiaddr(cls._UNIX_SOCKET_PREFIX + f"p2pclient-{socket_uid}.sock")
++        if sys.platform == "win32":
++            # Windows does not support Unix-domain sockets via p2pd; use TCP loopback instead.
++            daemon_port = _free_tcp_port()
++            client_port = _free_tcp_port()
++            self._daemon_listen_maddr = Multiaddr(f"/ip4/127.0.0.1/tcp/{daemon_port}")
++            self._client_listen_maddr = Multiaddr(f"/ip4/127.0.0.1/tcp/{client_port}")
++        else:
++            socket_uid = secrets.token_urlsafe(8)
++            self._daemon_listen_maddr = Multiaddr(cls._UNIX_SOCKET_PREFIX + f"p2pd-{socket_uid}.sock")
++            self._client_listen_maddr = Multiaddr(cls._UNIX_SOCKET_PREFIX + f"p2pclient-{socket_uid}.sock")
+         if announce_maddrs is not None:
+             for addr in announce_maddrs:
+                 addr = Multiaddr(addr)
+@@ -320,9 +336,13 @@
+         self._child = None
+         self._alive = True
+ 
+-        socket_uid = secrets.token_urlsafe(8)
+         self._daemon_listen_maddr = daemon_listen_maddr
+-        self._client_listen_maddr = Multiaddr(cls._UNIX_SOCKET_PREFIX + f"p2pclient-{socket_uid}.sock")
++        if sys.platform == "win32":
++            client_port = _free_tcp_port()
++            self._client_listen_maddr = Multiaddr(f"/ip4/127.0.0.1/tcp/{client_port}")
++        else:
++            socket_uid = secrets.token_urlsafe(8)
++            self._client_listen_maddr = Multiaddr(cls._UNIX_SOCKET_PREFIX + f"p2pclient-{socket_uid}.sock")
+ 
+         self._client = await p2pclient.Client.create(self._daemon_listen_maddr, self._client_listen_maddr)
+ 
+@@ -674,10 +694,12 @@
+                 self._child.terminate()
+                 logger.debug(f"Terminated p2pd with id = {self.peer_id}")
+ 
++            if sys.platform != "win32":
++                with suppress(FileNotFoundError, TypeError):
++                    os.remove(self._daemon_listen_maddr["unix"])
++        if sys.platform != "win32":
+             with suppress(FileNotFoundError, TypeError):
+-                os.remove(self._daemon_listen_maddr["unix"])
+-        with suppress(FileNotFoundError, TypeError):
+-            os.remove(self._client_listen_maddr["unix"])
++                os.remove(self._client_listen_maddr["unix"])
+ 
+     @staticmethod
+     def _make_process_args(*args, **kwargs) -> List[str]:
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/hivemind/utils/asyncio.py b/hivemind/utils/asyncio.py
+--- a/hivemind/utils/asyncio.py	2026-01-03 02:41:31.000000000 -0500
++++ b/hivemind/utils/asyncio.py	2026-07-06 15:34:34.925113600 -0400
+@@ -5,7 +5,19 @@
+ from contextlib import AbstractAsyncContextManager, AbstractContextManager, asynccontextmanager
+ from typing import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Optional, Tuple, TypeVar, Union
+ 
+-import uvloop
++# Windows-compatible uvloop shim: prefer uvloop, fall back to winloop, then plain asyncio.
++try:
++    import uvloop as _loop_impl
++
++    _HAS_FAST_LOOP = True
++except ImportError:
++    try:
++        import winloop as _loop_impl  # type: ignore[no-redef]
++
++        _HAS_FAST_LOOP = True
++    except ImportError:
++        _loop_impl = None  # type: ignore[assignment]
++        _HAS_FAST_LOOP = False
+ 
+ from hivemind.utils.logging import get_logger
+ 
+@@ -14,12 +26,13 @@
+ 
+ 
+ def switch_to_uvloop() -> asyncio.AbstractEventLoop:
+-    """stop any running event loops; install uvloop; then create, set and return a new event loop"""
++    """stop any running event loops; install uvloop/winloop; then create, set and return a new event loop"""
+     try:
+         asyncio.get_event_loop().stop()  # if we're in jupyter, get rid of its built-in event loop
+     except RuntimeError:
+         pass  # this allows running DHT from background threads with no event loop
+-    uvloop.install()
++    if _HAS_FAST_LOOP:
++        _loop_impl.install()
+     loop = asyncio.new_event_loop()
+     asyncio.set_event_loop(loop)
+     return loop
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/hivemind/utils/mpfuture.py b/hivemind/utils/mpfuture.py
+--- a/hivemind/utils/mpfuture.py	2026-01-03 02:41:31.000000000 -0500
++++ b/hivemind/utils/mpfuture.py	2026-07-06 17:22:15.143466000 -0400
+@@ -90,6 +90,7 @@
+         self._maybe_initialize_mpfuture_backend()
+ 
+         self._origin_pid, self._uid = os.getpid(), uuid.uuid4().int
++        self._is_copy = False  # True on deserialized copies (see __setstate__)
+         self._shared_state_code = SharedBytes.next()
+         self._state_cache: Dict[State, State] = {}
+         # mapping from global to cached local future used that makes updates immediately
+@@ -130,14 +131,23 @@
+         async def _event_setter():
+             self._aio_event.set()
+ 
+-        if self._loop.is_closed():
+-            return  # do nothing, the loop is already closed
+-        elif self._loop.is_running() and running_loop == self._loop:
+-            asyncio.create_task(_event_setter())
+-        elif self._loop.is_running() and running_loop != self._loop:
+-            asyncio.run_coroutine_threadsafe(_event_setter(), self._loop)
+-        else:
+-            self._loop.run_until_complete(_event_setter())
++        try:
++            if self._loop.is_closed():
++                return  # do nothing, the loop is already closed
++            elif self._loop.is_running() and running_loop == self._loop:
++                asyncio.create_task(_event_setter())
++            elif self._loop.is_running() and running_loop != self._loop:
++                asyncio.run_coroutine_threadsafe(_event_setter(), self._loop)
++            elif running_loop is not None and running_loop != self._loop:
++                # We are inside a different running loop (e.g. a background thread with its own loop).
++                # run_until_complete would fail because it cannot nest loops.  Use call_soon_threadsafe
++                # to schedule the set on the target loop from outside.
++                self._loop.call_soon_threadsafe(self._aio_event.set)
++            else:
++                self._loop.run_until_complete(_event_setter())
++        except Exception:
++            # Never raise from here -- this would prevent _condition.notify_all() from firing.
++            pass
+ 
+     @classmethod
+     def _maybe_initialize_mpfuture_backend(cls):
+@@ -205,8 +215,30 @@
+         except (ConnectionError, BrokenPipeError, EOFError, OSError) as e:
+             logger.debug(f"No updates were sent: pipe to origin process was broken ({e})", exc_info=True)
+ 
++    def _resolve_original(self) -> Optional[MPFuture]:
++        """
++        If this future is a deserialized copy living in the same process as its origin (thread-mode,
++        where hivemind components run as threads instead of forked processes), fetch the original
++        future so terminal transitions can be applied to it directly. The pid-based origin check in
++        set_result/set_exception/cancel was written for fork-mode and misidentifies same-process
++        copies as the origin: the copy would then resolve its *own* detached base.Future (fresh
++        _condition from __setstate__), flip the *shared* state code, and never deliver the payload --
++        the original ends up FINISHED with result None, and any thread already blocked in result()
++        waits forever.
++        """
++        if MPFuture._active_futures is None:
++            return None
++        future_ref = MPFuture._active_futures.get(self._uid)
++        return future_ref() if future_ref is not None else None
++
+     def set_result(self, result: ResultType):
+-        if os.getpid() == self._origin_pid:
++        if os.getpid() == self._origin_pid and self._is_copy:
++            original = self._resolve_original()
++            if original is not None:
++                original.set_result(result)
++            else:  # origin object is gone; nobody awaits the result, just mark the shared state
++                self._state_cache[self._state], self._result = base.FINISHED, result
++        elif os.getpid() == self._origin_pid:
+             super().set_result(result)
+             MPFuture._active_futures.pop(self._uid, None)
+         elif self._state in TERMINAL_STATES:
+@@ -216,7 +248,13 @@
+             self._send_update(UpdateType.RESULT, result)
+ 
+     def set_exception(self, exception: Optional[BaseException]):
+-        if os.getpid() == self._origin_pid:
++        if os.getpid() == self._origin_pid and self._is_copy:
++            original = self._resolve_original()
++            if original is not None:
++                original.set_exception(exception)
++            else:
++                self._state_cache[self._state], self._exception = base.FINISHED, exception
++        elif os.getpid() == self._origin_pid:
+             super().set_exception(exception)
+             MPFuture._active_futures.pop(self._uid, None)
+         elif self._state in TERMINAL_STATES:
+@@ -226,7 +264,13 @@
+             self._send_update(UpdateType.EXCEPTION, exception)
+ 
+     def cancel(self) -> bool:
+-        if os.getpid() == self._origin_pid:
++        if os.getpid() == self._origin_pid and self._is_copy:
++            original = self._resolve_original()
++            if original is not None:
++                return original.cancel()
++            self._state_cache[self._state] = base.CANCELLED
++            return True
++        elif os.getpid() == self._origin_pid:
+             MPFuture._active_futures.pop(self._uid, None)
+             return super().cancel()
+         elif self._state in [base.RUNNING, base.FINISHED]:
+@@ -292,7 +336,11 @@
+             raise asyncio.CancelledError()
+ 
+     def __del__(self):
+-        if getattr(self, "_origin_pid", None) == os.getpid() and MPFuture._active_futures is not None:
++        if (
++            not getattr(self, "_is_copy", False)  # a same-process copy must not deregister the original
++            and getattr(self, "_origin_pid", None) == os.getpid()
++            and MPFuture._active_futures is not None
++        ):
+             MPFuture._active_futures.pop(self._uid, None)
+         if getattr(self, "_aio_event", None):
+             self._aio_event.set()
+@@ -319,6 +367,7 @@
+             # the buffer with a non-shared tensor since the origin process doesn't care about our state anymore.
+             self._shared_state_code = torch.tensor([ALL_STATES.index(base.PENDING)], dtype=torch.uint8)
+         self._origin_pid, self._uid = state["_origin_pid"], state["_uid"]
++        self._is_copy = True
+         self._result, self._exception = state["_result"], state["_exception"]
+         self._use_lock = state["_use_lock"]
+ 
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/hivemind/utils/process_compat.py b/hivemind/utils/process_compat.py
+--- a/hivemind/utils/process_compat.py	1969-12-31 19:00:00.000000000 -0500
++++ b/hivemind/utils/process_compat.py	2026-07-06 17:21:02.418999200 -0400
+@@ -0,0 +1,70 @@
++"""
++Platform-compatible process/thread base for hivemind components.
++
++On POSIX systems that support os.fork, hivemind DHT and ConnectionHandler run as child
++processes (mp.context.ForkProcess), allowing MPFuture to share state via fork-inherited
++shared memory.
++
++On Windows, fork is not available.  Instead these components run as daemon threads in the
++*same* process.  MPFuture still works (same-process deserialized copies delegate to the original
++future via the _active_futures registry; see mpfuture.py) and the GIL is released for torch compute and I/O so thread-mode is viable.
++
++Public name: ``MPProcessBase``
++"""
++
++from __future__ import annotations
++
++import multiprocessing as mp
++import os
++import sys
++import threading
++import warnings
++from typing import Optional
++
++
++if sys.platform != "win32":
++    # POSIX: use the real ForkProcess
++    MPProcessBase = mp.context.ForkProcess
++else:
++    # Windows: Thread-based shim that exposes the Process-compatible surface used by hivemind.
++
++    class MPProcessBase(threading.Thread):
++        """
++        Thread-mode replacement for mp.context.ForkProcess on Windows.
++
++        Implements the subset of the multiprocessing.Process API that hivemind uses:
++        start, join, is_alive, terminate (no-op + warning), daemon property, pid property,
++        and name.  The ``run`` method must be overridden by subclasses.
++        """
++
++        # Threading.Thread already has: start, join, is_alive, daemon, name.
++        # We only need to add/override the pieces that differ.
++
++        def __init__(self, *args, **kwargs):
++            # multiprocessing.Process silently accepts 'daemon' as a keyword;
++            # threading.Thread also accepts it, so we can forward everything.
++            super().__init__(*args, **kwargs)
++            self.daemon = True  # default matches hivemind's typical usage
++
++        # ------------------------------------------------------------------
++        # Process-compatible additions
++        # ------------------------------------------------------------------
++
++        def terminate(self) -> None:  # noqa: D401
++            """No-op on Windows thread-mode (threads cannot be forcibly killed)."""
++            warnings.warn(
++                f"{self.__class__.__name__}.terminate() is a no-op in thread-mode (Windows). "
++                "The background thread will exit when its run() method returns.",
++                RuntimeWarning,
++                stacklevel=2,
++            )
++
++        @property
++        def pid(self) -> Optional[int]:
++            """Return the host process PID (threads share the process)."""
++            return os.getpid() if self.is_alive() else None
++
++        # exitcode is accessed by some hivemind callers; mirror it as None while alive.
++        @property
++        def exitcode(self) -> Optional[int]:
++            return None if self.is_alive() else 0
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/requirements.txt b/requirements.txt
+--- a/requirements.txt	2026-01-03 02:41:31.000000000 -0500
++++ b/requirements.txt	2026-07-06 15:37:11.424582600 -0400
+@@ -5,7 +5,8 @@
+ prefetch_generator>=1.0.1
+ msgpack>=0.5.6
+ sortedcontainers
+-uvloop>=0.14.0
++uvloop>=0.14.0; sys_platform != 'win32'
++winloop>=0.1; sys_platform == 'win32'
+ grpcio-tools>=1.33.2
+ protobuf>=5.29.0
+ configargparse>=1.2.3
+diff -ruN '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=build' '--exclude=dist' '--exclude=*.egg-info' '--exclude=.eggs' '--exclude=p2pd*' '--exclude=*_pb2.py' '--exclude=*_pb2_grpc.py' '--exclude=*_pb2.pyi' a/setup.py b/setup.py
+--- a/setup.py	2026-01-03 02:41:31.000000000 -0500
++++ b/setup.py	2026-07-06 15:42:23.109780500 -0400
+@@ -9,7 +9,7 @@
+ import tempfile
+ import urllib.request
+ 
+-from pkg_resources import parse_requirements, parse_version
++from packaging.version import Version as parse_version
+ from setuptools import find_packages, setup
+ from setuptools.command.build_py import build_py
+ from setuptools.command.develop import develop
+@@ -73,11 +73,17 @@
+ def _detect_current_platform():
+     """Detect the current platform in the standard format"""
+     arch = platform.machine()
+-    if arch in ("x86_64", "x64"):
++    if arch in ("x86_64", "x64", "AMD64"):
+         arch = "amd64"
+     elif arch in ("aarch64", "aarch64_be", "armv8b", "armv8l"):
+         arch = "arm64"
+-    return f"{platform.system().lower()}-{arch}"
++    sys_name = platform.system().lower()
++    return f"{sys_name}-{arch}"
++
++
++def _binary_name():
++    """Return the platform-appropriate p2pd binary name."""
++    return "p2pd.exe" if platform.system().lower() == "windows" else "p2pd"
+ 
+ 
+ def build_p2p_daemon(target_platform, output_dir):
+@@ -102,7 +108,12 @@
+     if target_platform is None:
+         target_platform = _detect_current_platform()
+ 
+-    env.update(_parse_platform(target_platform))
++    is_windows = target_platform.startswith("windows")
++    if not is_windows:
++        env.update(_parse_platform(target_platform))
++    else:
++        env["GOOS"] = "windows"
++        env["GOARCH"] = target_platform.split("-", 1)[1] if "-" in target_platform else "amd64"
+     print(f"Building p2pd for the current platform ({target_platform})")
+ 
+     with tempfile.TemporaryDirectory() as tempdir:
+@@ -112,7 +123,8 @@
+         with tarfile.open(dest, "r:gz") as tar:
+             tar.extractall(tempdir)
+ 
+-        output_path = os.path.abspath(os.path.join(output_dir, "hivemind", "hivemind_cli", "p2pd"))
++        binary_fname = _binary_name()
++        output_path = os.path.abspath(os.path.join(output_dir, "hivemind", "hivemind_cli", binary_fname))
+         result = subprocess.run(
+             ["go", "build", "-o", output_path],
+             cwd=os.path.join(tempdir, f"go-libp2p-daemon-{P2PD_VERSION.lstrip('v')}", "p2pd"),
+@@ -146,7 +158,7 @@
+         )
+     expected_hash = P2P_BINARY_HASH[binary_name]
+ 
+-    binary_path = os.path.join(str(output_dir), "hivemind", "hivemind_cli", "p2pd")
++    binary_path = os.path.join(str(output_dir), "hivemind", "hivemind_cli", _binary_name())
+     if sha256(binary_path) != expected_hash:
+         binary_url = f"{P2PD_BINARY_URL.rstrip('/')}/{binary_name}"
+         print(f"Downloading {binary_url} to {binary_path}")
+@@ -176,7 +188,7 @@
+         target_platform = os.environ.get("HIVEMIND_TARGET_PLATFORM")
+         buildgo = os.environ.get("HIVEMIND_BUILDGO", "").lower() in ("1", "true", "yes")
+ 
+-        if buildgo:
++        if buildgo or platform.system().lower() == "windows":
+             build_p2p_daemon(target_platform=target_platform, output_dir=self.build_lib)
+         else:
+             download_p2p_daemon(target_platform=target_platform, output_dir=self.build_lib)
+@@ -199,7 +211,7 @@
+ 
+ 
+ with open("requirements.txt") as requirements_file:
+-    install_requires = list(map(str, parse_requirements(requirements_file)))
++    install_requires = [line.strip() for line in requirements_file if line.strip() and not line.startswith("#")]
+ 
+ # loading version from setup.py
+ with codecs.open(os.path.join(here, "hivemind", "__init__.py"), encoding="utf-8") as init_file:
+@@ -209,10 +221,10 @@
+ extras = {}
+ 
+ with open("requirements-dev.txt") as dev_requirements_file:
+-    extras["dev"] = list(map(str, parse_requirements(dev_requirements_file)))
++    extras["dev"] = [line.strip() for line in dev_requirements_file if line.strip() and not line.startswith("#")]
+ 
+ with open("requirements-docs.txt") as docs_requirements_file:
+-    extras["docs"] = list(map(str, parse_requirements(docs_requirements_file)))
++    extras["docs"] = [line.strip() for line in docs_requirements_file if line.strip() and not line.startswith("#")]
+ 
+ extras["bitsandbytes"] = ["bitsandbytes~=0.45.2"]
+ 
+@@ -233,7 +245,7 @@
+     package_data={"hivemind": ["proto/*", "hivemind_cli/*"]},
+     include_package_data=True,
+     license="MIT",
+-    setup_requires=["grpcio-tools>=1.33.2,<1.68"],
++    setup_requires=["grpcio-tools>=1.33.2,<1.68", "packaging>=20.9"],
+     install_requires=install_requires,
+     extras_require=extras,
+     classifiers=[
