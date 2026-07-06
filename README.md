@@ -76,6 +76,18 @@ cd petals
 uv sync --extra dev
 ```
 
+### Windows native setup
+
+PyPI does not publish Windows wheels for `hivemind`, and upstream `hivemind` depends on POSIX-only process and socket behavior. On Windows, build and install the patched wheel from this repository before running Petals:
+
+```powershell
+uv run python scripts/build_hivemind_windows.py --out-dir dist
+uv pip install (Get-ChildItem .\dist\hivemind-1.1.12-*-win_amd64.whl | Select-Object -Last 1).FullName
+uv pip install -e .
+```
+
+The build requires Go on `PATH`; the script compiles `p2pd.exe` and packages it into the wheel. The Petals dependency on PyPI `hivemind` is disabled on Windows, so install the local wheel explicitly after creating or syncing the environment.
+
 Or install into an existing environment with pip:
 
 ```bash
@@ -84,7 +96,22 @@ pip install git+https://github.com/ApexDevelopment/petals
 
 For NVIDIA GPUs, install a CUDA build of PyTorch (for example `conda install pytorch pytorch-cuda=12.4 -c pytorch -c nvidia`) before installing. A `Dockerfile` is included for running servers in a container.
 
-For **Intel GPUs** (Arc, or the integrated graphics on recent Core chips), install an XPU build of PyTorch — `pip install torch --index-url https://download.pytorch.org/whl/xpu` — with the Intel GPU driver and Level-Zero runtime present. Servers then run with `--device xpu`. Quantization (`--quant_type int8/nf4`) is CUDA-only; on XPU, MPS, or CPU run with `--quant_type none` (the default off CUDA).
+For **Intel GPUs** (Arc, or the integrated graphics on recent Core chips), install the PyTorch XPU build that matches this fork's torch pin:
+
+```bash
+pip install --force-reinstall --index-url https://download.pytorch.org/whl/xpu "torch==2.6.0+xpu"
+```
+
+Use the Intel GPU driver and Level-Zero runtime. Servers then run with `--device xpu`. Quantization (`--quant_type int8/nf4`) is CUDA-only; on XPU, MPS, or CPU run with `--quant_type none` (the default off CUDA).
+
+To smoke-test the Windows native stack with a one-machine private swarm, use the TinyLlamaV0-compatible checkpoint `Maykeye/TinyLLama-v0`:
+
+```powershell
+uv pip install --force-reinstall --index-url https://download.pytorch.org/whl/xpu "torch==2.6.0+xpu"
+.\.venv\Scripts\python.exe -u scripts\smoke_tinyllama_local_swarm.py --device xpu --timeout 300 --block-indices 0:8
+```
+
+The smoke script starts a local DHT peer, serves all eight tiny Llama blocks, connects a distributed client through the local peer address, and generates a few tokens.
 
 ## Supported models
 

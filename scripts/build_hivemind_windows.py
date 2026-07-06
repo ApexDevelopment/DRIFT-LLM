@@ -54,6 +54,14 @@ def run(cmd, **kwargs):
     return result
 
 
+def ensure_pip() -> None:
+    """Make sure `sys.executable -m pip` works, including in uv venvs created without pip."""
+    probe = subprocess.run([sys.executable, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if probe.returncode == 0:
+        return
+    run([sys.executable, "-m", "ensurepip", "--upgrade"])
+
+
 def apply_patch(patch_file: Path, target_dir: Path) -> None:
     """Apply a unified diff patch. Tries system `patch` first, then pure-Python fallback."""
     # Feed raw bytes: text=True would re-encode through the locale codepage on Windows
@@ -124,6 +132,7 @@ def main() -> None:
         env["HIVEMIND_BUILDGO"] = "1"
 
         # Ensure grpcio-tools is available for proto compilation
+        ensure_pip()
         run([sys.executable, "-m", "pip", "install", "--quiet", "grpcio-tools>=1.33.2"])
 
         run(

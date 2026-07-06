@@ -9,6 +9,7 @@ import contextlib
 import ctypes
 import multiprocessing as mp
 import os
+import threading
 import time
 from typing import AsyncContextManager, Dict, Optional, Sequence
 
@@ -35,6 +36,7 @@ class MemoryCache:
         self._handle_counter = mp.Value(ctypes.c_int64, 0, lock=False)
         self._allocated_tensors: Dict[Handle, torch.Tensor] = {}
         self.runtime_pid = os.getpid()
+        self.runtime_thread_id: Optional[int] = None
 
         self._pipe_recv, self._pipe_send = mp.Pipe(duplex=False)  # any ConnectionHandler -> runtime
         self._lock_acquire_memory = mp.Lock()
@@ -84,7 +86,7 @@ class MemoryCache:
         :note: This function should be called by connection handlers, it can be called concurrently from multiple processes.
         Furthermore, it can be called concurrently with at most one use_cache call in runtime.
         """
-        assert os.getpid() != self.runtime_pid, "must be called by a ConnectionHandler, not runtime"
+        assert not self._is_runtime_context(), "must be called by a ConnectionHandler, not runtime"
         assert all(descr.device is not None for descr in descriptors), "please specify allocated devices"
         if self.max_alloc_timeout is not None:
             timeout = min(timeout, self.max_alloc_timeout)
@@ -201,6 +203,9 @@ class MemoryCache:
         However, runtime may call use_cache concurrently with one or more connection handlers calling allocate_cache
         """
         assert os.getpid() == self.runtime_pid
+        if self.runtime_thread_id is None:
+            self.runtime_thread_id = threading.get_ident()
+        assert self._is_runtime_context()
         # note: this specific function is not concurrent, so you can safely allocate/offload/defragment data here
 
         # read creation/deletion requests from connection handlers
@@ -219,6 +224,11 @@ class MemoryCache:
                         )
                     self._allocated_tensors.pop(handle, None)
         yield tuple(self._allocated_tensors[handle] for handle in handles)
+
+    def _is_runtime_context(self) -> bool:
+        if os.getpid() != self.runtime_pid:
+            return False
+        return self.runtime_thread_id is not None and threading.get_ident() == self.runtime_thread_id
 
 
 class AllocationFailed(Exception):
