@@ -785,3 +785,11 @@ class RuntimeWithDeduplicatedPools(Runtime):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pools = tuple(set(self.pools))
+
+    def run(self):
+        # The runtime executes every backend's inference/forward (hence MemoryCache.use_cache) on this
+        # thread. Claim it as the runtime thread before serving so the cache can distinguish the runtime
+        # from connection handlers even before the first use_cache (esp. on Windows thread-mode).
+        for backend in self.module_backends.values():
+            backend.memory_cache.mark_runtime_thread()
+        super().run()

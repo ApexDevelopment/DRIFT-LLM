@@ -243,10 +243,22 @@ class MemoryCache:
                     self._allocated_tensors.pop(handle, None)
         yield tuple(self._allocated_tensors[handle] for handle in handles)
 
+    def mark_runtime_thread(self) -> None:
+        """Claim the calling thread as the runtime thread. Called once at runtime startup so that
+        the runtime is identifiable before its first ``use_cache`` -- important on Windows thread-mode,
+        where connection handlers share the runtime's pid and can only be told apart by thread id."""
+        assert os.getpid() == self.runtime_pid
+        self.runtime_thread_id = threading.get_ident()
+
     def _is_runtime_context(self) -> bool:
         if os.getpid() != self.runtime_pid:
-            return False
-        return self.runtime_thread_id is not None and threading.get_ident() == self.runtime_thread_id
+            return False  # a different process => a connection handler (POSIX fork)
+        # Same pid: on POSIX this is the runtime; on Windows thread-mode it may be the runtime or a
+        # handler thread. Once the runtime has claimed its thread we can tell them apart; before that
+        # (e.g. no runtime started, as in unit tests) a same-pid caller is treated as the runtime.
+        if self.runtime_thread_id is None:
+            return True
+        return threading.get_ident() == self.runtime_thread_id
 
     # ---- Paged mode (opt-in; see PagedKVPool) --------------------------------------------------
 
