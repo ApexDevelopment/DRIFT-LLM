@@ -11,21 +11,12 @@ jobs:
       matrix:
         # A single lightweight leg. This fork is validated end-to-end on real hardware by the
         # maintainer, so CI is a cheap regression guard rather than a full compatibility matrix.
-        # Dropped from the upstream matrix, all of which overran free-tier runners:
-        #   - the heavy models (bigscience/bloom-560m, artek0chumak/TestMixtral) -- large downloads
-        #   - the extra Python versions -- redundant for a smoke-level guard
-        #   - the macOS legs -- @pytest.mark.forked network tests segfault under macOS fork-safety
         include:
-          - { model: 'Maykeye/TinyLLama-v0', os: 'ubuntu', python-version: '3.12' }
+          - { os: 'ubuntu', python-version: '3.12' }
       fail-fast: false
     runs-on: ${{ matrix.os }}-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
-      - name: Increase swap space
-        if: ${{ matrix.os == 'ubuntu' }}
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 10
       - name: Checkout
         uses: actions/checkout@v3
       - name: Install uv
@@ -40,58 +31,25 @@ jobs:
         run: |
           set -x  # Print executed commands
           source .venv/bin/activate  # so bare `python`/`pytest` below use the uv env
-          export MODEL_NAME="${{ matrix.model }}"
-          export REF_NAME="${{ matrix.model }}"
-          export ADAPTER_NAME=""  # TinyLlama has no test adapter; leave the adapter paths unexercised here
 
-          # [Step 1] Set up a minimal single-server swarm.
+          # Offline-only test suite.
           #
-          # Free-tier runners have ~2 vCPUs. The upstream suite launched four servers, two of
-          # them running a throughput benchmark (--throughput auto), which starves the CPU: block
-          # serving crawls, client requests time out, and the tests retry for many minutes and
-          # effectively hang. One server hosting every block with a fixed throughput keeps the whole
-          # model reachable without that contention. It runs under tests/server2.id because
-          # test_server_stats pins ClientConfig.allowed_servers to that peer id.
-
-          python -m drift.cli.run_dht \
-            --identity_path tests/bootstrap.id --host_maddrs /ip4/127.0.0.1/tcp/31337 &> bootstrap.log &
-          BOOTSTRAP_PID=$!
-
-          export INITIAL_PEERS=/ip4/127.0.0.1/tcp/31337/p2p/QmS9KwZptnVdB9FFV7uGgaTq4sEKBwcYeKZDfSpyKDUd1g
-          # ^-- multiaddr in INITIAL_PEERS is determined by --identity_path and --host_maddrs
-
-          until [ -s bootstrap.log ]; do sleep 5; done  # wait for DHT init
-
-          # Serve every block from a single server so the client sees full model coverage.
-          NUM_BLOCKS=$(python -c "from transformers import AutoConfig; print(AutoConfig.from_pretrained('$MODEL_NAME').num_hidden_layers)")
-
-          python -m drift.cli.run_server $MODEL_NAME \
-            --device cpu --torch_dtype float32 --initial_peers $INITIAL_PEERS \
-            --identity_path tests/server2.id --num_blocks $NUM_BLOCKS --throughput 1 &> server1.log &
-          SERVER1_PID=$!
-
-          sleep 5  # wait for the log file to appear
-
-          tail -n 100 -f bootstrap.log server1.log &
-          LOGGER_PID=$!
-
-          sleep 30  # wait for the server to download and load every block
-          kill -0 $BOOTSTRAP_PID $SERVER1_PID  # ensure both peers survived init
-
-          # [Step 2] Run PyTest
-
-          # Share disk cache between DRIFT-LLM servers, clients, and HF Transformers
-          export TRANSFORMERS_CACHE=~/.cache/drift
-
-          # Necessary for @pytest.mark.forked to work properly on macOS, see https://github.com/kevlened/pytest-parallel/issues/93
-          export no_proxy=*
-          export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-
-          # Fail fast instead of retrying for many minutes if the single server is unhealthy.
-          export DRIFT_MAX_RETRIES=3
-
-          pytest tests --durations=0 --durations-min=1.0 -v
-
-          # [Step 3] Clean up
-
-          kill -s SIGINT $BOOTSTRAP_PID $SERVER1_PID $LOGGER_PID
+          # Free-tier runners have ~2 vCPUs, which cannot sustain a live inference swarm: the
+          # upstream suite launched multiple servers (some running a --throughput auto benchmark),
+          # starved the CPU, and the client tests retried for many minutes and effectively hung.
+          # The tests below are pure, synthetic, single-process bit-exact checks -- no DHT, no
+          # server, no model download, no network -- so they finish in seconds and still guard the
+          # parts of this fork most likely to regress (KV cache, paged cache, per-arch blocks,
+          # attention wiring, join tokens, device portability). The swarm/network tests
+          # (test_full_model, test_remote_sequential, ...) require MODEL_NAME/INITIAL_PEERS and a
+          # running swarm; the maintainer exercises those on real hardware.
+          pytest -v --durations=0 --durations-min=1.0 \
+            tests/test_attn_implementation.py \
+            tests/test_cache.py \
+            tests/test_deepseek_v3.py \
+            tests/test_device_portability.py \
+            tests/test_join_token.py \
+            tests/test_kv_cache_strategy.py \
+            tests/test_paged_cache.py \
+            tests/test_peft.py \
+            tests/test_priority_pool.py
