@@ -37,7 +37,10 @@ dependencies = [
     # of a larger jump (latest is 2.12). bitsandbytes (CUDA-only quantization) is optional at
     # runtime -- only imported for --quant_type int8/nf4 -- so non-CUDA backends don't need it.
     "torch>=2.6,<2.7",
-    "bitsandbytes>=0.45,<0.46",
+    # bitsandbytes (CUDA-only quantization) publishes no macOS wheels -- gate it off Darwin so
+    # `uv sync` resolves there; it's imported lazily (only for --quant_type int8/nf4), so CPU/Mac
+    # backends run fine without it.
+    "bitsandbytes>=0.45,<0.46; platform_system != 'Darwin'",
     "accelerate>=1.0",
     "huggingface-hub>=0.30",
     "tokenizers>=0.21",
