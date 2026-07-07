@@ -81,6 +81,12 @@ def main():
     parser.add_argument('--attn_cache_tokens', type=int, default=None,
                         help='The number of past attention key/value pairs that will be stored between inference steps. '
                              'Default: 16384 for models with multi-query attention (based on Llama 2, Falcon), 4096 for others')
+    parser.add_argument('--cache', type=str, default='contiguous', choices=['contiguous', 'paged'],
+                        help='Attention KV cache manager: "contiguous" reserves each session\'s full max_length up '
+                             'front (default); "paged" lazily allocates fixed-size pages from a shared pool so many '
+                             'sessions pack into the same budget. Paged mode is single-device (no tensor parallelism) for now.')
+    parser.add_argument('--page_size', type=int, default=16,
+                        help='Tokens per page when --cache paged is used (default: 16)')
 
     parser.add_argument('--cache_dir', type=str, default=None,
                         help='Path to a directory in which a downloaded pretrained model configuration should be cached if the standard cache should not be used.')

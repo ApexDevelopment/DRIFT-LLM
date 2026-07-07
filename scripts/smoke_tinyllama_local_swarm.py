@@ -63,6 +63,8 @@ def main() -> None:
     parser.add_argument("--device", default="xpu")
     parser.add_argument("--timeout", type=float, default=240)
     parser.add_argument("--block-indices", default="0:8")
+    parser.add_argument("--cache", default="contiguous", choices=["contiguous", "paged"])
+    parser.add_argument("--page-size", type=int, default=16)
     args = parser.parse_args()
 
     faulthandler.dump_traceback_later(args.timeout, exit=True)
@@ -124,6 +126,8 @@ def main() -> None:
             max_batch_size=64,
             max_chunk_size_bytes=16 * 1024 * 1024,
             max_alloc_timeout=30,
+            paged_cache=args.cache == "paged",
+            page_size=args.page_size,
             inference_max_length=64,
             torch_dtype=torch_dtype,
             cache_dir=None,

@@ -89,6 +89,24 @@ class TransformerBackend(ModuleBackend):
         for descr in self.get_inference_cache_descriptors(batch_size=1, max_length=1):
             self.cache_bytes_per_token[descr.device] += descr.numel() * get_size_in_bytes(descr.dtype)
 
+        if self.memory_cache.paged:
+            self._configure_paged_pool()
+
+    def _configure_paged_pool(self) -> None:
+        """Register this block's slice of the shared paged pool (single tensor-parallel shard only)."""
+        assert len(self.module.devices) == 1, "paged KV cache does not support tensor parallelism yet"
+        key_descr, value_descr = self.get_inference_cache_descriptors(batch_size=1, max_length=1)
+        device = key_descr.device
+        page_bytes = self.cache_bytes_per_token[device] * self.memory_cache.page_size
+        self.memory_cache.configure_paged_pool(
+            num_pages=int(self.memory_cache.max_size_bytes // page_bytes),
+            num_kv_heads=key_descr.size[1],  # key descr: [batch, kv_heads, k_head_dim, len]
+            k_head_dim=key_descr.size[2],
+            v_head_dim=value_descr.size[3],  # value descr: [batch, kv_heads, len, v_head_dim]
+            dtype=self.dtype,
+            device=device,
+        )
+
     def get_inference_cache_descriptors(self, batch_size: int, max_length: int) -> Sequence[TensorDescriptor]:
         """Create tensor descriptors for attention cache tensors used during inference_step"""
         return self.cache_strategy.get_cache_descriptors(
@@ -117,34 +135,51 @@ class TransformerBackend(ModuleBackend):
         inference_info: InferenceMetadata,
     ) -> Tuple[torch.Tensor, ...]:
         assert hidden_states.ndim == 3, "expected hidden states to be 3-dimensional: [batch_size, seq_len, hid_size]"
-        seq_len = hidden_states.shape[1]
 
-        with self.memory_cache.use_cache(
-            *inference_info.cache_handles
-        ) as cache_tensors, self._peft_module.using_adapter(inference_info.active_adapter):
-            self._reorder_cache_inplace(cache_tensors, hypo_ids)
+        with self._peft_module.using_adapter(inference_info.active_adapter):
+            if self.memory_cache.paged:
+                return self._paged_inference_step(hidden_states, hypo_ids, inference_info)
 
-            # We chunk the inputs so that peak memory for long sequences fits into `autograd_memory`
-            # reserved in `Server._choose_num_blocks()`. This saves us from OOMs if `max_chunk_size_bytes`
-            # is at least 4-6x less than `autograd_memory`.
-            max_chunk_length = self._estimate_max_chunk_length(hidden_states, inference_info)
-            output_hidden_states = torch.empty_like(hidden_states) if seq_len > max_chunk_length else None
-            layer_past = self.cache_strategy.select_layer_past(
-                cache_tensors, inference_info.prefix_length, num_shards=len(self.module.module_shards)
-            )
-            for offset in range(0, seq_len, max_chunk_length):
-                hidden_states_chunk = hidden_states[:, offset : offset + max_chunk_length, :]
-                output_hidden_states_chunk, new_kvs = self.module.forward(
-                    hidden_states_chunk, layer_past=layer_past, use_cache=True
+            with self.memory_cache.use_cache(*inference_info.cache_handles) as cache_tensors:
+                self._reorder_cache_inplace(cache_tensors, hypo_ids)
+                max_chunk_length = self._estimate_max_chunk_length(hidden_states, inference_info)
+                layer_past = self.cache_strategy.select_layer_past(
+                    cache_tensors, inference_info.prefix_length, num_shards=len(self.module.module_shards)
                 )
-                if seq_len > max_chunk_length:
-                    output_hidden_states[:, offset : offset + max_chunk_length] = output_hidden_states_chunk
-                else:
-                    output_hidden_states = output_hidden_states_chunk  # saves one memcopy
-                layer_past = new_kvs
+                output_hidden_states, new_kvs = self._forward_chunked(hidden_states, layer_past, max_chunk_length)
+                self.cache_strategy.update_cache(cache_tensors, new_kvs, inference_info.prefix_length)
+                return (output_hidden_states,)
 
-            self.cache_strategy.update_cache(cache_tensors, new_kvs, inference_info.prefix_length)
+    def _paged_inference_step(
+        self, hidden_states: torch.Tensor, hypo_ids: torch.LongTensor, inference_info: InferenceMetadata
+    ) -> Tuple[torch.Tensor, ...]:
+        (slot_id,) = inference_info.cache_handles
+        with self.memory_cache.use_paged_pool() as pool:
+            if not is_dummy(hypo_ids):
+                pool.reorder(slot_id, hypo_ids)
+            max_chunk_length = self._estimate_max_chunk_length(hidden_states, inference_info)
+            layer_past = pool.gather(slot_id, inference_info.prefix_length)
+            output_hidden_states, new_kvs = self._forward_chunked(hidden_states, layer_past, max_chunk_length)
+            pool.scatter(slot_id, new_kvs, inference_info.prefix_length)
             return (output_hidden_states,)
+
+    def _forward_chunked(self, hidden_states: torch.Tensor, layer_past, max_chunk_length: int):
+        # We chunk the inputs so that peak memory for long sequences fits into `autograd_memory`
+        # reserved in `Server._choose_num_blocks()`. This saves us from OOMs if `max_chunk_size_bytes`
+        # is at least 4-6x less than `autograd_memory`.
+        seq_len = hidden_states.shape[1]
+        output_hidden_states = torch.empty_like(hidden_states) if seq_len > max_chunk_length else None
+        for offset in range(0, seq_len, max_chunk_length):
+            hidden_states_chunk = hidden_states[:, offset : offset + max_chunk_length, :]
+            output_hidden_states_chunk, new_kvs = self.module.forward(
+                hidden_states_chunk, layer_past=layer_past, use_cache=True
+            )
+            if seq_len > max_chunk_length:
+                output_hidden_states[:, offset : offset + max_chunk_length] = output_hidden_states_chunk
+            else:
+                output_hidden_states = output_hidden_states_chunk  # saves one memcopy
+            layer_past = new_kvs
+        return output_hidden_states, new_kvs
 
     def _estimate_max_chunk_length(self, hidden_states: torch.Tensor, inference_info: InferenceMetadata) -> int:
         # We assume that attention logit matrices are the main thing that consumes memory, given that

@@ -540,8 +540,15 @@ class TransformerConnectionHandler(ConnectionHandler):
         Allocate memory cache for all transformer blocks, return cache handle
         :returns: a list of {len(backends)} elements, where i-th element is a tuple of cache handles for i-th backend
         """
+        memory_cache = backends[0].memory_cache
+        if memory_cache.paged:
+            # Paged mode reserves no per-session cache up front: register one lazily-grown slot per
+            # block and hand each backend its slot id as a single-element cache-handle tuple.
+            async with memory_cache.allocate_paged_slots(len(backends), batch_size, timeout) as slot_ids:
+                yield [(slot_id,) for slot_id in slot_ids]
+            return
         descriptors = [backend.get_inference_cache_descriptors(batch_size, max_length) for backend in backends]
-        async with backends[0].memory_cache.allocate_cache(*chain(*descriptors), timeout=timeout) as handles:
+        async with memory_cache.allocate_cache(*chain(*descriptors), timeout=timeout) as handles:
             yield nested_pack(handles, descriptors)
 
     def _log_request(

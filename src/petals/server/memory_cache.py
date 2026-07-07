@@ -7,11 +7,12 @@ For now, the only purpose of this code is to ensure that allocated memory will b
 import asyncio
 import contextlib
 import ctypes
+import math
 import multiprocessing as mp
 import os
 import threading
 import time
-from typing import AsyncContextManager, Dict, Optional, Sequence
+from typing import AsyncContextManager, Dict, List, Optional, Sequence
 
 import async_timeout
 import torch
@@ -27,7 +28,14 @@ logger = get_logger(__name__)
 class MemoryCache:
     """A shared cache for storing tensors that persist across calls. Main use case: storing past attention KVs"""
 
-    def __init__(self, max_size_bytes: Optional[int], max_alloc_timeout: Optional[float] = None):
+    def __init__(
+        self,
+        max_size_bytes: Optional[int],
+        max_alloc_timeout: Optional[float] = None,
+        *,
+        paged: bool = False,
+        page_size: int = 16,
+    ):
         self.max_size_bytes = max_size_bytes if max_size_bytes is not None else (2**64 - 1)
         self.max_alloc_timeout = max_alloc_timeout
         self._lock_metadata = mp.Lock()
@@ -41,6 +49,16 @@ class MemoryCache:
         self._pipe_recv, self._pipe_send = mp.Pipe(duplex=False)  # any ConnectionHandler -> runtime
         self._lock_acquire_memory = mp.Lock()
         self._memory_freed_event = mp.Event()
+
+        # Paged mode: sessions draw fixed-size pages lazily from a shared pool instead of reserving
+        # a contiguous max_length cache up front (see PagedKVPool). The pool itself is created on the
+        # runtime side; handlers only do page-budget admission via the shared counters below.
+        self.paged = paged
+        self.page_size = page_size
+        self._paged_pool: "Optional[PagedKVPool]" = None  # runtime-side only
+        self._paged_pool_config: Optional[dict] = None
+        self._num_pages = mp.Value(ctypes.c_int64, 0, lock=False)
+        self._paged_used_pages = mp.Value(ctypes.c_int64, 0, lock=True)
 
     @property
     def current_size_bytes(self) -> int:
@@ -230,6 +248,264 @@ class MemoryCache:
             return False
         return self.runtime_thread_id is not None and threading.get_ident() == self.runtime_thread_id
 
+    # ---- Paged mode (opt-in; see PagedKVPool) --------------------------------------------------
+
+    def configure_paged_pool(
+        self,
+        *,
+        num_pages: int,
+        num_kv_heads: int,
+        k_head_dim: int,
+        v_head_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> None:
+        """Register the paged pool geometry (called by each backend at construction).
+
+        Every served block on a server shares one pool of the same geometry; the pool tensors are
+        allocated lazily on the runtime side (:meth:`use_paged_pool`). The first caller sets the
+        config and the page budget; the rest must match.
+        """
+        config = dict(
+            num_pages=num_pages,
+            page_size=self.page_size,
+            num_kv_heads=num_kv_heads,
+            k_head_dim=k_head_dim,
+            v_head_dim=v_head_dim,
+            dtype=dtype,
+            device=device,
+        )
+        if self._paged_pool_config is None:
+            self._paged_pool_config = config
+            self._num_pages.value = num_pages
+        else:
+            assert self._paged_pool_config == config, "all served blocks must share the paged pool geometry"
+
+    @contextlib.asynccontextmanager
+    async def allocate_paged_slots(self, num_slots: int, batch_size: int, timeout: Optional[float]):
+        """Register ``num_slots`` paged cache slots (one per served block) for a new session.
+
+        Reserves no pages up front; admission only requires the pool not be completely full. Returns
+        the integer slot ids; freeing them (on context exit) returns their pages to the pool.
+        """
+        assert self.paged, "allocate_paged_slots requires paged mode"
+        assert not self._is_runtime_context(), "must be called by a ConnectionHandler, not runtime"
+        if self.max_alloc_timeout is not None:
+            timeout = self.max_alloc_timeout if timeout is None else min(timeout, self.max_alloc_timeout)
+
+        await self._wait_for_free_pages(num_slots, timeout)
+        with self._lock_metadata:
+            slot_ids = [int(self.handle_counter) + i for i in range(num_slots)]
+            self.handle_counter += num_slots
+            self._pipe_send.send(("paged_register", slot_ids, batch_size))
+        try:
+            yield slot_ids
+        finally:
+            with self._lock_metadata:
+                self._pipe_send.send(("paged_free", slot_ids, None))
+
+    async def _wait_for_free_pages(self, num_slots: int, timeout: Optional[float]) -> None:
+        def has_room() -> bool:
+            return self._num_pages.value - self._paged_used_pages.value >= num_slots
+
+        if has_room():
+            return
+        if timeout == 0:
+            raise AllocationFailed(f"Paged cache full: no room for {num_slots} new sessions")
+
+        loop = asyncio.get_event_loop()
+        deadline = None if timeout is None else time.perf_counter() + timeout
+        while not has_room():
+            remaining = None if deadline is None else deadline - time.perf_counter()
+            if remaining is not None and remaining <= 0:
+                raise AllocationFailed(f"Paged cache full: no room for {num_slots} sessions in {timeout}s")
+            await loop.run_in_executor(None, self._memory_freed_event.wait, remaining)
+            self._memory_freed_event.clear()
+
+    @contextlib.contextmanager
+    def use_paged_pool(self):
+        """Runtime-side access to the shared page pool; drains pending slot register/free requests.
+
+        Mirrors :meth:`use_cache`: called only by the runtime (single thread, no process parallelism),
+        it may run concurrently with connection handlers registering/freeing slots over the pipe.
+        """
+        assert os.getpid() == self.runtime_pid
+        if self.runtime_thread_id is None:
+            self.runtime_thread_id = threading.get_ident()
+        assert self._is_runtime_context()
+
+        pool = self._ensure_paged_pool()
+        while self._pipe_recv.poll():
+            tag, slot_ids, extra = self._pipe_recv.recv()
+            if tag == "paged_register":
+                for slot_id in slot_ids:
+                    pool.register_slot(slot_id, extra)  # extra = batch_size
+            elif tag == "paged_free":
+                for slot_id in slot_ids:
+                    pool.free_slot(slot_id)
+                self._memory_freed_event.set()
+            else:
+                raise RuntimeError(f"Unexpected paged pipe message tag: {tag}")
+        try:
+            yield pool
+        finally:
+            self._paged_used_pages.value = pool.num_used_pages
+
+    def _ensure_paged_pool(self) -> "PagedKVPool":
+        if self._paged_pool is None:
+            assert self._paged_pool_config is not None, "paged pool used before configure_paged_pool()"
+            self._paged_pool = PagedKVPool(**self._paged_pool_config)
+        return self._paged_pool
+
 
 class AllocationFailed(Exception):
     pass
+
+
+class PagedKVPool:
+    """Runtime-side paged key/value store shared by every paged inference session on a server.
+
+    One pair of pool tensors per device holds fixed-size *pages* (``page_size`` tokens each). Each
+    logical *slot* -- one served block's cache for one session -- owns a **block table** mapping
+    logical token positions to physical pages, grown lazily as the sequence extends, so a session
+    only occupies pages for the tokens it actually generates (unlike the contiguous cache, which
+    reserves ``max_length`` up front). :meth:`gather` materializes a contiguous BLOOM-layout prefix
+    for the existing block/attention path (Stage 5a); a later kernel (Stage 5b) will read pages in
+    place. Pages are stored per (slot, batch-row) with no cross-row sharing, so a beam-search
+    ``hypo_ids`` reorder is an exact permutation with copy-on-duplicate.
+
+    The pool is pure and synchronous: it lives entirely on the runtime thread/process (only the
+    runtime allocates device tensors), so it needs no locks of its own. Single tensor-parallel
+    shard only in 5a.
+    """
+
+    def __init__(
+        self,
+        *,
+        num_pages: int,
+        page_size: int,
+        num_kv_heads: int,
+        k_head_dim: int,
+        v_head_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ):
+        self.num_pages = num_pages
+        self.page_size = page_size
+        self.num_kv_heads = num_kv_heads
+        self.k_head_dim = k_head_dim
+        self.v_head_dim = v_head_dim
+        self.dtype = dtype
+        self.device = device
+        # BLOOM layout per page: key [pages, kv_heads, k_head_dim, page_size],
+        # value [pages, kv_heads, page_size, v_head_dim] -- so gather/scatter are contiguous copies.
+        self.key_pool = torch.zeros((num_pages, num_kv_heads, k_head_dim, page_size), dtype=dtype, device=device)
+        self.value_pool = torch.zeros((num_pages, num_kv_heads, page_size, v_head_dim), dtype=dtype, device=device)
+        self._free_pages: List[int] = list(range(num_pages))
+        self._block_tables: Dict[int, List[List[int]]] = {}  # slot_id -> per-row list of physical page indices
+
+    @property
+    def num_free_pages(self) -> int:
+        return len(self._free_pages)
+
+    @property
+    def num_used_pages(self) -> int:
+        return self.num_pages - len(self._free_pages)
+
+    def register_slot(self, slot_id: int, batch_size: int) -> None:
+        if slot_id in self._block_tables:
+            return  # idempotent: a slot may be re-announced across steps
+        self._block_tables[slot_id] = [[] for _ in range(batch_size)]
+
+    def free_slot(self, slot_id: int) -> None:
+        block_table = self._block_tables.pop(slot_id, None)
+        if block_table is None:
+            return
+        for row_pages in block_table:
+            self._free_pages.extend(row_pages)
+
+    def _acquire_page(self) -> int:
+        if not self._free_pages:
+            raise AllocationFailed("Paged attention cache is full: no free pages left")
+        return self._free_pages.pop()
+
+    def gather(self, slot_id: int, prefix_length: int) -> Sequence[torch.Tensor]:
+        """Materialize the first ``prefix_length`` tokens as contiguous BLOOM-layout key/value.
+
+        Returns ``(key, value)`` matching ``StandardGQACache.select_layer_past``:
+        ``key [batch*kv_heads, k_head_dim, prefix_length]``,
+        ``value [batch*kv_heads, prefix_length, v_head_dim]``.
+        """
+        block_table = self._block_tables[slot_id]
+        batch_size = len(block_table)
+        if prefix_length == 0:
+            key = self.key_pool.new_empty((batch_size * self.num_kv_heads, self.k_head_dim, 0))
+            value = self.value_pool.new_empty((batch_size * self.num_kv_heads, 0, self.v_head_dim))
+            return key, value
+
+        num_logical_pages = math.ceil(prefix_length / self.page_size)
+        idx = torch.tensor([row[:num_logical_pages] for row in block_table], device=self.device)  # [batch, npages]
+
+        gathered_padded = num_logical_pages * self.page_size
+        keys = self.key_pool[idx]  # [batch, npages, kv_heads, k_head_dim, page_size]
+        keys = keys.permute(0, 2, 3, 1, 4).reshape(batch_size, self.num_kv_heads, self.k_head_dim, gathered_padded)
+        keys = keys[:, :, :, :prefix_length].reshape(batch_size * self.num_kv_heads, self.k_head_dim, prefix_length)
+
+        values = self.value_pool[idx]  # [batch, npages, kv_heads, page_size, v_head_dim]
+        values = values.permute(0, 2, 1, 3, 4).reshape(batch_size, self.num_kv_heads, gathered_padded, self.v_head_dim)
+        values = values[:, :, :prefix_length, :].reshape(batch_size * self.num_kv_heads, prefix_length, self.v_head_dim)
+        return keys, values
+
+    def scatter(self, slot_id: int, new_kvs: Sequence[torch.Tensor], prefix_length: int) -> None:
+        """Write freshly computed keys/values for tokens ``[prefix_length:new_length]`` into pages.
+
+        ``new_kvs`` is the block's full-length output in BLOOM layout (``key [b*kv, k_head_dim,
+        new_length]``, ``value [b*kv, new_length, v_head_dim]``); only the tail past
+        ``prefix_length`` is new and gets written, allocating pages at page boundaries.
+        """
+        block_table = self._block_tables[slot_id]
+        batch_size = len(block_table)
+        new_key, new_value = new_kvs
+        new_length = new_key.shape[-1]
+        if new_length <= prefix_length:
+            return
+        new_key = new_key.reshape(batch_size, self.num_kv_heads, self.k_head_dim, new_length)
+        new_value = new_value.reshape(batch_size, self.num_kv_heads, new_length, self.v_head_dim)
+
+        num_logical_pages = math.ceil(new_length / self.page_size)
+        for row_pages in block_table:  # grow every row's block table to cover the new length
+            while len(row_pages) < num_logical_pages:
+                row_pages.append(self._acquire_page())
+
+        first_page = prefix_length // self.page_size
+        for lp in range(first_page, num_logical_pages):
+            tok_start = max(prefix_length, lp * self.page_size)
+            tok_end = min(new_length, (lp + 1) * self.page_size)
+            off_start = tok_start - lp * self.page_size
+            off_end = tok_end - lp * self.page_size
+            pages_lp = torch.tensor([row[lp] for row in block_table], device=self.device)  # [batch]
+            self.key_pool[pages_lp, :, :, off_start:off_end] = new_key[:, :, :, tok_start:tok_end]
+            self.value_pool[pages_lp, :, off_start:off_end, :] = new_value[:, :, tok_start:tok_end, :]
+
+    def reorder(self, slot_id: int, hypo_ids: torch.Tensor) -> None:
+        """Permute batch rows by ``hypo_ids`` (beam search), copying pages for duplicated sources."""
+        block_table = self._block_tables[slot_id]
+        hypo_ids = hypo_ids.tolist()
+        result: List[List[int]] = []
+        claimed = set()
+        for src in hypo_ids:
+            if src not in claimed:
+                claimed.add(src)
+                result.append(block_table[src])  # first use reuses the source pages in place
+            else:
+                copied = []
+                for page in block_table[src]:
+                    new_page = self._acquire_page()
+                    self.key_pool[new_page].copy_(self.key_pool[page])
+                    self.value_pool[new_page].copy_(self.value_pool[page])
+                    copied.append(new_page)
+                result.append(copied)
+        for src, row_pages in enumerate(block_table):  # reclaim rows no dest row referenced
+            if src not in claimed:
+                self._free_pages.extend(row_pages)
+        self._block_tables[slot_id] = result

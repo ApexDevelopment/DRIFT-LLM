@@ -74,6 +74,8 @@ class Server:
         max_chunk_size_bytes: int = 256 * 1024 * 1024,
         max_alloc_timeout: float = 600,
         attn_cache_tokens: Optional[int] = None,
+        cache: str = "contiguous",
+        page_size: int = 16,
         torch_dtype: str = "auto",
         attn_implementation: str = "auto",
         revision: Optional[str] = None,
@@ -207,6 +209,10 @@ class Server:
         self.inference_max_length = inference_max_length
         self.max_chunk_size_bytes = max_chunk_size_bytes
         self.max_alloc_timeout = max_alloc_timeout
+
+        assert cache in ("contiguous", "paged"), f"--cache must be 'contiguous' or 'paged', got {cache!r}"
+        self.paged_cache = cache == "paged"
+        self.page_size = page_size
 
         # For attention cache in GPU or RAM
         if attn_cache_tokens is None:
@@ -345,6 +351,8 @@ class Server:
                 max_batch_size=self.max_batch_size,
                 max_chunk_size_bytes=self.max_chunk_size_bytes,
                 max_alloc_timeout=self.max_alloc_timeout,
+                paged_cache=self.paged_cache,
+                page_size=self.page_size,
                 inference_max_length=self.inference_max_length,
                 torch_dtype=self.torch_dtype,
                 cache_dir=self.cache_dir,
@@ -450,6 +458,8 @@ class ModuleContainer(threading.Thread):
         max_batch_size: int,
         max_chunk_size_bytes: int,
         max_alloc_timeout: float,
+        paged_cache: bool = False,
+        page_size: int = 16,
         torch_dtype: torch.dtype,
         cache_dir: str,
         max_disk_space: int,
@@ -465,7 +475,7 @@ class ModuleContainer(threading.Thread):
         **kwargs,
     ) -> ModuleContainer:
         module_uids = [f"{dht_prefix}{UID_DELIMITER}{block_index}" for block_index in block_indices]
-        memory_cache = MemoryCache(attn_cache_bytes, max_alloc_timeout)
+        memory_cache = MemoryCache(attn_cache_bytes, max_alloc_timeout, paged=paged_cache, page_size=page_size)
 
         server_info.state = ServerState.JOINING
         dht_announcer = ModuleAnnouncerThread(
