@@ -19,13 +19,13 @@ You get the ergonomics of a local `transformers` model (full PyTorch access to l
 **1. Install.** On Linux or macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ApexDevelopment/DRIFT-LLM/main/scripts/install.sh | sh
+curl -fsSL https://badideas.cc/drift-llm/install.sh | sh
 ```
 
 On Windows (PowerShell — needs [uv](https://docs.astral.sh/uv/) and [Go](https://go.dev/dl/), since it also builds the `hivemind` wheel):
 
 ```powershell
-irm https://raw.githubusercontent.com/ApexDevelopment/DRIFT-LLM/main/scripts/install.ps1 | iex
+irm https://badideas.cc/drift-llm/install.ps1 | iex
 ```
 
 The installer detects your accelerator and installs a matching PyTorch build. Override it with `DRIFT_DEVICE=cpu|cuda|xpu|mps`.
