@@ -1,0 +1,9 @@
+# Shell scripts and Dockerfiles run on Unix (and via `curl ... | sh`); they must be
+# checked out with LF regardless of the platform they were committed from, or the
+# shell chokes on the stray CR (e.g. `set -eu\r` -> "set: -: invalid option").
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+
+# PowerShell / batch are Windows-native; keep CRLF.
+*.ps1         text eol=crlf
+*.bat         text eol=crlf
