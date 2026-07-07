@@ -163,7 +163,7 @@ async def iterate_rpc_inference(
         if "start_from_position" in step_metadata:
             start_from_position = step_metadata["start_from_position"]
             assert (
-                prefix_length >= start_from_position,
+                prefix_length >= start_from_position
             ), f"prefix_length={prefix_length}, start_from_position={start_from_position}"
             prefix_length = start_from_position
 
