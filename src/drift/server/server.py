@@ -67,7 +67,7 @@ class Server:
         throughput: Union[float, str],
         num_blocks: Optional[int] = None,
         block_indices: Optional[str] = None,
-        num_handlers: int = 8,
+        num_handlers: int = 1,
         inference_max_length: Optional[int] = None,
         min_batch_size: int = 1,
         max_batch_size: Optional[int] = None,

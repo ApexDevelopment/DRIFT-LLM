@@ -61,8 +61,11 @@ def build_parser() -> configargparse.ArgParser:
 
     parser.add_argument('--compression', type=str, default='NONE', required=False, help='Tensor compression communication')
 
-    parser.add_argument('--num_handlers', type=int, default=8, required=False,
-                        help='server will use this many processes to handle incoming requests')
+    parser.add_argument('--num_handlers', type=int, default=1, required=False,
+                        help='server will use this many parallel workers to service incoming requests. '
+                             'One handler is plenty for a private cluster with light concurrency; raise it '
+                             'only if many clients hit this server at once (higher aggregate throughput and '
+                             'lower tail latency under concurrent load, at the cost of more connections)')
     parser.add_argument('--prefetch_batches', type=int, default=1, required=False,
                         help='Pre-form this many subsequent batches while GPU is processing the current one')
     parser.add_argument('--sender_threads', type=int, default=1, required=False,
