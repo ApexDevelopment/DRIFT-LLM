@@ -150,7 +150,7 @@ def main() -> None:
     print(f"\nSuccess! Wheel built: {wheels[-1]}")
     print(f"\nInstall with:")
     print(f'  pip install "{wheels[-1]}"')
-    print("Then install petals (hivemind excluded by sys_platform marker):")
+    print("Then install drift (hivemind excluded by sys_platform marker):")
     print("  pip install -e .")
 
 

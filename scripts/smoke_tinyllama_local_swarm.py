@@ -17,16 +17,16 @@ from hivemind.proto.runtime_pb2 import CompressionType
 from hivemind.utils.timed_storage import MAX_DHT_TIME_DISCREPANCY_SECONDS
 from transformers import AutoTokenizer
 
-from petals import AutoDistributedModelForCausalLM
-from petals.constants import DTYPE_MAP
-from petals.data_structures import UID_DELIMITER, ModelInfo, ServerInfo, ServerState
-from petals.server.block_utils import resolve_block_dtype
-from petals.server.server import ModuleContainer
-from petals.utils.auto_config import AutoDistributedConfig
-from petals.utils.convert_block import QuantType
-from petals.utils.dht import get_remote_module_infos
-from petals.utils.hardware import normalize_device
-from petals.utils.misc import get_size_in_bytes
+from drift import AutoDistributedModelForCausalLM
+from drift.constants import DTYPE_MAP
+from drift.data_structures import UID_DELIMITER, ModelInfo, ServerInfo, ServerState
+from drift.server.block_utils import resolve_block_dtype
+from drift.server.server import ModuleContainer
+from drift.utils.auto_config import AutoDistributedConfig
+from drift.utils.convert_block import QuantType
+from drift.utils.dht import get_remote_module_infos
+from drift.utils.hardware import normalize_device
+from drift.utils.misc import get_size_in_bytes
 
 MODEL = "Maykeye/TinyLLama-v0"
 DHT_PREFIX = "_windows_xpu_tinyllama_v0_smoke"

@@ -7,10 +7,10 @@
 import pytest
 import torch
 
-from petals import AutoDistributedConfig
-from petals.client.remote_sequential import RemoteSequential
-from petals.server.from_pretrained import load_pretrained_block
-from petals.utils.misc import DUMMY_KEY_PAST
+from drift import AutoDistributedConfig
+from drift.client.remote_sequential import RemoteSequential
+from drift.server.from_pretrained import load_pretrained_block
+from drift.utils.misc import DUMMY_KEY_PAST
 from test_utils import *
 
 

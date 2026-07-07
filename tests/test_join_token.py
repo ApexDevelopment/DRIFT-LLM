@@ -1,6 +1,6 @@
 import pytest
 
-from petals.utils.join_token import SCHEME, decode_join_token, encode_join_token, parse_join, select_advertisable_maddrs
+from drift.utils.join_token import SCHEME, decode_join_token, encode_join_token, parse_join, select_advertisable_maddrs
 
 PEER = "12D3KooWAb3xYcuspLm8sMbHhBc9x8pnwFy8Fq6iH1jK2example"
 

@@ -4,8 +4,8 @@ import pytest
 import torch
 import transformers
 
-from petals.server.from_pretrained import load_pretrained_block
-from petals.utils.tensor_parallel import TensorParallel, get_bloom_config
+from drift.server.from_pretrained import load_pretrained_block
+from drift.utils.tensor_parallel import TensorParallel, get_bloom_config
 from test_utils import MODEL_NAME
 
 

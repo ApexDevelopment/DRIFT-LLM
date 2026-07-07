@@ -9,8 +9,8 @@ MLA key/value head dims and the paged admission/packing logic. No swarm / networ
 import pytest
 import torch
 
-from petals.server.memory_cache import AllocationFailed, MemoryCache, PagedKVPool
-from petals.utils.kv_cache import MLACache, StandardGQACache
+from drift.server.memory_cache import AllocationFailed, MemoryCache, PagedKVPool
+from drift.utils.kv_cache import MLACache, StandardGQACache
 
 ATOL = 3e-5
 CPU = torch.device("cpu")
@@ -98,7 +98,7 @@ def _drive_prefill_decode(block, pool, x, n_prefill, total, slot=0):
 @pytest.mark.parametrize("page_size", [1, 4, 16])
 @pytest.mark.parametrize("head_dim", [None, 48])
 def test_paged_pool_matches_block(page_size, head_dim):
-    from petals.models.llama.block import WrappedLlamaBlock
+    from drift.models.llama.block import WrappedLlamaBlock
 
     torch.manual_seed(0)
     cfg = _llama_config(head_dim=head_dim)
@@ -115,7 +115,7 @@ def test_paged_pool_matches_block(page_size, head_dim):
 
 
 def test_paged_pool_mla_asymmetric_head_dims():
-    from petals.models.deepseek_v3.block import WrappedDeepseekV3Block
+    from drift.models.deepseek_v3.block import WrappedDeepseekV3Block
 
     torch.manual_seed(0)
     cfg = _deepseek_config()

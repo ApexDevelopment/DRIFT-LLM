@@ -1,4 +1,4 @@
-"""Device-portability tests: a Petals block must produce the same result on any accelerator.
+"""Device-portability tests: a DRIFT-LLM block must produce the same result on any accelerator.
 
 These build a tiny Llama block on CPU (the reference) and re-run it on each available accelerator
 (NVIDIA CUDA / Intel XPU / Apple MPS), asserting the outputs and the KV-cache round-trip match. On a
@@ -8,7 +8,7 @@ giving real coverage wherever a GPU exists. They need no swarm, network, or mode
 import pytest
 import torch
 
-from petals.utils.hardware import (
+from drift.utils.hardware import (
     ACCELERATOR_TYPES,
     empty_device_cache,
     get_device_name,
@@ -40,7 +40,7 @@ requires_accelerator = pytest.mark.skipif(not AVAILABLE, reason="no accelerator 
 def _tiny_llama_block():
     from transformers.models.llama import LlamaConfig
 
-    from petals.models.llama.block import WrappedLlamaBlock
+    from drift.models.llama.block import WrappedLlamaBlock
 
     cfg = LlamaConfig(
         hidden_size=64,

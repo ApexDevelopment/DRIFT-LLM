@@ -1,6 +1,6 @@
 """
 Offline tests for server-side attention-implementation selection
-(``petals.utils.misc.default_attn_implementation`` + the per-block wiring).
+(``drift.utils.misc.default_attn_implementation`` + the per-block wiring).
 
 sdpa is the fast default (torch SDPA -> FlashAttention/memory-efficient kernels on GPU) wherever
 it is numerically correct; ALiBi (Bloom/Falcon) and Gemma-2 logit softcapping must stay on eager.
@@ -9,7 +9,7 @@ No swarm / network / download required.
 import pytest
 import torch
 
-from petals.utils.misc import default_attn_implementation
+from drift.utils.misc import default_attn_implementation
 
 
 def test_default_attn_implementation_per_arch():
@@ -36,7 +36,7 @@ def _make(arch):
     if arch == "llama":
         from transformers.models.llama import LlamaConfig
 
-        from petals.models.llama.block import WrappedLlamaBlock
+        from drift.models.llama.block import WrappedLlamaBlock
 
         return (
             LlamaConfig(
@@ -52,7 +52,7 @@ def _make(arch):
     if arch == "qwen3":
         from transformers.models.qwen3 import Qwen3Config
 
-        from petals.models.qwen3.block import WrappedQwen3Block
+        from drift.models.qwen3.block import WrappedQwen3Block
 
         return (
             Qwen3Config(
@@ -69,7 +69,7 @@ def _make(arch):
     if arch == "gemma3":
         from transformers.models.gemma3 import Gemma3TextConfig
 
-        from petals.models.gemma3.block import WrappedGemma3Block
+        from drift.models.gemma3.block import WrappedGemma3Block
 
         return (
             Gemma3TextConfig(

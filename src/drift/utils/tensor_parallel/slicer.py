@@ -1,0 +1,292 @@
+"""
+Tensor-parallelism config and the machinery that splits a module into per-rank shards.
+
+Vendored (and trimmed) from the ``tensor_parallel`` library. Convolution sharding, the
+NCCL/torch.distributed collective backends and the ``TENSOR_PARALLEL_USE_NATIVE`` toggle were
+removed: DRIFT-LLM only shards ``nn.Linear`` / ``nn.Embedding`` layers across a few local devices.
+"""
+from __future__ import annotations
+
+import dataclasses
+import logging
+import re
+from copy import deepcopy
+from functools import partial
+from itertools import chain
+from typing import Callable, Dict, Sequence, Union
+
+import torch
+from torch import nn
+
+from drift.utils.tensor_parallel import cross_device_ops
+from drift.utils.tensor_parallel.communications import AllGather, AllReduce
+
+Arg = Union[int, str]
+Pattern = Union[str, re.Pattern]
+Action = Union[str, Callable]  # actions describe what to do with tensors
+StateRules = Dict[Pattern, Action]  # state rules are pattern-matched actions on module state dict
+ModuleRules = Dict[Pattern, Dict[Arg, Action]]  # module rules are pattern-matched actions on inputs/outputs/attrs
+
+logger = logging.getLogger(__file__)
+
+
+@dataclasses.dataclass
+class Config:
+    state_rules: StateRules
+    input_rules: ModuleRules
+    output_rules: ModuleRules
+    attr_rules: ModuleRules
+
+    def __init__(
+        self, state_rules: StateRules, input_rules: ModuleRules, output_rules: ModuleRules, attr_rules: ModuleRules
+    ):
+        all_rules = [state_rules, input_rules, output_rules, attr_rules]
+        for i, rule_set in enumerate(all_rules):
+            all_rules[i] = dict((re.compile(pattern), actions) for pattern, actions in rule_set.items())
+        self.state_rules, self.input_rules, self.output_rules, self.attr_rules = all_rules
+
+    @classmethod
+    def get_default_config(cls, module: nn.Module, device_ids: Sequence[torch.device]) -> "Config":
+        """Make a generic config that shards individual linear and embedding layers."""
+        config = cls({}, {}, {}, {})
+        emb_weights = {m.weight for m in module.modules() if isinstance(m, (nn.Embedding, nn.EmbeddingBag))}
+
+        for name, module in module.named_modules():
+            if isinstance(module, (nn.Embedding, nn.EmbeddingBag)):
+                assert module.max_norm is None or module.norm_type < 2
+                assert getattr(module, "bias", None) is None or module.bias.shape == module.embedding_dim
+                config.state_rules[f"^{name}.weight$"] = "split 1"
+                if getattr(module, "bias", None) is not None:
+                    config.state_rules[f"^{name}.bias$"] = "split 0"
+                config.output_rules[f"^{name}$"] = {0: "gather -1"}
+            elif isinstance(module, nn.Linear):
+                assert module.weight.shape == (module.out_features, module.in_features)
+                assert module.bias is None or module.bias.shape == (module.out_features,)
+                if module.weight not in emb_weights:  # regular linear layer
+                    config.state_rules[f"^{name}.(weight|bias)$"] = "split 0"
+                    config.output_rules[f"^{name}$"] = {0: "gather -1"}
+                else:
+                    # linear weight tied with embeddings; a popular special case for language models.
+                    # since the embedding weight is sliced over dim 1, adapt to the input-sliced weight
+                    config.input_rules[f"^{name}$"] = {0: "split -1"}
+                    config.output_rules[f"^{name}$"] = {0: "sum"}
+                    if module.bias is not None:
+                        config.state_rules[f"^{name}.bias$"] = "scale"
+        return config
+
+    def create_collective_ops(self, devices: Sequence[torch.device]) -> "Config":
+        """Return a copy of this config with thread-parallel collective ops (AllGather/AllReduce) baked in.
+
+        :note: call this during ``TensorParallel`` init, before making shards.
+        """
+        return dataclasses.replace(
+            self,
+            input_rules=_create_collective_ops(self.input_rules, devices),
+            output_rules=_create_collective_ops(self.output_rules, devices),
+        )
+
+    def make_shard(
+        self, module: nn.Module, device: torch.device, config: "Config", *, rank: int, world_size: int
+    ) -> nn.Module:
+        """Apply a tensor-parallel config to a container module; return the shard for a given rank and device."""
+        assert (
+            len(list(module.children())) != 0
+        ), "Please ensure module is a container (e.g. Sequential), not a single layer"
+        source_tensors = dict(chain(module.named_parameters(), module.named_buffers()))
+        _maybe_parameter = lambda x, buf: nn.Parameter(buf, x.requires_grad) if isinstance(x, nn.Parameter) else x
+        substitutes = {
+            id(x): _maybe_parameter(x, torch.empty(0, dtype=x.dtype, device=x.device, requires_grad=x.requires_grad))
+            for x in source_tensors.values()
+        }
+        shard = deepcopy(module, memo=substitutes).to(device)
+        # ^-- note: memo=... replaces all parameters and buffers with empty tensors (cheap deepcopy)
+        del module, substitutes
+
+        # convert parameters and buffers
+        process_state_(shard, source_tensors, config, rank=rank, world_size=world_size)
+        del source_tensors
+
+        # convert or wrap intermediate modules
+        unique_wrappers = {}
+        with torch.no_grad():
+            for name, submodule in shard.named_modules():
+                if submodule in unique_wrappers:
+                    continue  # wrap a module at most once
+                maybe_wrapped = config._maybe_wrap_submodule(name, submodule, rank=rank, world_size=world_size)
+                if maybe_wrapped:  # apply the same wrapper to all occurrences of the given module
+                    unique_wrappers[submodule] = maybe_wrapped
+
+        for parent in list(shard.modules()):
+            for child_name, child in list(parent.named_children()):
+                if child in unique_wrappers:
+                    setattr(parent, child_name, unique_wrappers[child])
+
+        return unique_wrappers.get(shard, shard)  # wrap the root module if needed
+
+    def _maybe_wrap_submodule(self, name: str, module: nn.Module, *, rank: int, world_size: int) -> nn.Module:
+        """Apply the config to a single module and return the (possibly) wrapped module.
+
+        :note: this does NOT apply state_rules (those are handled by ``process_state_``).
+        :note: this modifies the original module in-place.
+        """
+        attr_actions = find_matching_actions("attr", name, self.attr_rules)
+        input_actions = find_matching_actions("input", name, self.input_rules)
+        output_actions = find_matching_actions("output", name, self.output_rules)
+        if attr_actions:
+            process_attrs_(module, attr_actions, rank=rank, world_size=world_size)
+        if input_actions or output_actions:
+            module = _TensorParallelWrapper(module, input_actions, output_actions, rank=rank, world_size=world_size)
+        return module
+
+
+def find_matching_actions(action_type: str, name: str, rules: ModuleRules) -> Dict[Arg, Action]:
+    found_actions = {}
+    for pattern, actions_for_pattern in rules.items():
+        if pattern.search(name) is not None:
+            for key, action in actions_for_pattern.items():
+                if isinstance(key, str) and key.strip().isdigit():
+                    key = int(key)  # canonicalize int keys
+                if found_actions.get(key, action) != action:
+                    raise ValueError(
+                        f"Found conflicting {action_type} rule for module {name}, key {key}:"
+                        f" {found_actions[key]} vs {action}"
+                    )
+                found_actions[key] = action
+    return found_actions
+
+
+def apply_action(input: torch.Tensor, action: Action, *, rank: int, world_size: int):
+    if callable(action):
+        return action(input, rank=rank)  # allreduce/allgather or a custom user-defined callable
+    action_type, *opts = action.split()
+    if action_type == "split":
+        dim = int(opts[0])
+        return torch.tensor_split(input, world_size, dim=dim)[rank]
+    if action_type == "scale":
+        return input / world_size
+    if action_type == "scale_int":
+        assert input % world_size == 0
+        return input // world_size
+    raise Exception(f"unexpected action {action_type}; supported actions: split, scale, scale_int, or a callable")
+
+
+def _create_collective_ops(rules: dict, devices: Sequence[torch.device]):
+    """Initialize thread-parallel collective operations (sum -> AllReduce, gather -> AllGather) from config rules."""
+    world_size = len(devices)
+    all_cuda = all(device.type == "cuda" for device in devices)
+    unique_output_transforms = {op for output_actions in rules.values() for op in output_actions.values()}
+    transform_map = {}
+
+    make_allreduce = partial(
+        AllReduce,
+        reduce_op=lambda xs, destination: cross_device_ops.reduce_add(xs, destination, all_cuda=all_cuda),
+        gather_op=lambda xs, destination: cross_device_ops.gather(
+            xs, dim=0, destination=destination, all_cuda=all_cuda
+        ),
+    )
+    make_allgather = lambda world_size, dim: AllGather(
+        world_size, gather_op=lambda xs, destination: cross_device_ops.gather(xs, dim=dim, all_cuda=all_cuda)
+    )
+
+    for transform in unique_output_transforms:
+        if callable(transform):
+            continue  # user-defined transform, no action needed
+        transform_type, *opts = transform.split()
+        if transform_type in ("split", "scale", "scale_int"):
+            continue  # not a collective op, no action needed
+        if transform_type == "sum":
+            transform_map[transform] = make_allreduce(world_size)
+        elif transform_type == "gather":
+            dim = int(opts[0]) if opts else -1
+            transform_map[transform] = make_allgather(world_size, dim)
+
+    initialized_output_rules = {}
+    for pattern, output_actions in rules.items():
+        output_actions = {key: transform_map.get(rule, rule) for key, rule in output_actions.items()}
+        initialized_output_rules[pattern] = output_actions
+    return initialized_output_rules
+
+
+@torch.no_grad()
+def process_state_(
+    sharded_module: nn.Module, source_tensors: Dict[str, torch.Tensor], config: Config, *, rank: int, world_size: int
+):
+    """Initialize a shard's parameters/buffers by applying the config's state_rules to the source tensors."""
+    unused_patterns = set(config.state_rules.keys())
+    for name, state in chain(sharded_module.named_parameters(), sharded_module.named_buffers()):
+        for pattern, action in config.state_rules.items():
+            if pattern.search(name) is not None:
+                new_data = apply_action(source_tensors[name], action, rank=rank, world_size=world_size)
+                unused_patterns.discard(pattern)
+                break
+        else:
+            new_data = source_tensors[name]  # copy source parameter as is
+
+        state.data = new_data.clone().detach().to(state.device).requires_grad_(state.requires_grad)
+        # note: .clone is required so that the resulting parameter owns its storage
+
+    if unused_patterns:
+        logger.warning(f"The following patterns in state_rules were unused: {[str(p) for p in unused_patterns]}")
+
+
+def process_attrs_(module: nn.Module, actions: Dict[Arg, str], rank: int, world_size: int):
+    """Modify module properties in-place."""
+    assert not getattr(module, "__tensor_parallel_process_attrs", False), "process_attrs was called more than once"
+    for attr, action in actions.items():
+        setattr(module, attr, apply_action(getattr(module, attr), action, rank=rank, world_size=world_size))
+    module.__tensor_parallel_process_attrs = True
+
+
+def process_input(input_actions: Dict[Arg, str], rank: int, world_size: int, *args, **kwargs):
+    extended_kwargs = dict(kwargs)
+    extended_kwargs.update(enumerate(args))
+    for target, action in input_actions.items():
+        extended_kwargs[target] = apply_action(extended_kwargs.get(target), action, rank=rank, world_size=world_size)
+    args = [extended_kwargs.pop(i) for i in range(len(args))]
+    return args, extended_kwargs
+
+
+def process_output(
+    output, output_actions: Dict[Arg, Callable[[torch.Tensor, int], torch.Tensor]], *, rank: int, world_size: int
+):
+    if isinstance(output, torch.Tensor):
+        return process_output({0: output}, output_actions, rank=rank, world_size=world_size)[0]
+    if isinstance(output, Sequence):
+        output_dict = process_output(dict(enumerate(output)), output_actions, rank=rank, world_size=world_size)
+        return type(output)((output_dict[i] for i in range(len(output))))
+    for target, action in output_actions.items():
+        output[target] = apply_action(output.get(target), action, rank=rank, world_size=world_size)
+    return output
+
+
+class _TensorParallelWrapper(nn.Module):
+    """Wraps a single module and applies tensor-parallel actions to its inputs and outputs."""
+
+    def __init__(
+        self,
+        module: nn.Module,
+        input_actions: Dict[Arg, Action],
+        output_actions: Dict[Arg, Action],
+        *,
+        rank: int,
+        world_size: int,
+    ):
+        super().__init__()
+        # note: attribute is named `module` on purpose -- drift.utils.misc.get_num_attention_heads
+        # unwraps a sharded/wrapped projection via `.module` to read its per-shard out_features.
+        self.module = module
+        self.input_actions, self.output_actions = input_actions, output_actions
+        self.rank, self.world_size = rank, world_size
+
+    def __getattr__(self, name: str):
+        # Stay transparent: fall back to the wrapped module for attributes the wrapper doesn't define
+        # (e.g. the block reads `self_attention.layer_idx` / `self_attn.head_dim` off a wrapped module).
+        try:
+            return super().__getattr__(name)  # nn.Module lookup: params/buffers/submodules incl. `module`
+        except AttributeError:
+            return getattr(self.module, name)
+
+    def forward(self, *args, **kwargs):
+        args, kwargs = process_input(self.input_actions, self.rank, self.world_size, *args, **kwargs)
+        output = self.module(*args, **kwargs)
+        return process_output(output, self.output_actions, rank=self.rank, world_size=self.world_size)

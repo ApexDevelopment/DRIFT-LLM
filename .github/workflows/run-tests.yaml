@@ -53,7 +53,7 @@ jobs:
           # model reachable without that contention. It runs under tests/server2.id because
           # test_server_stats pins ClientConfig.allowed_servers to that peer id.
 
-          python -m petals.cli.run_dht \
+          python -m drift.cli.run_dht \
             --identity_path tests/bootstrap.id --host_maddrs /ip4/127.0.0.1/tcp/31337 &> bootstrap.log &
           BOOTSTRAP_PID=$!
 
@@ -65,7 +65,7 @@ jobs:
           # Serve every block from a single server so the client sees full model coverage.
           NUM_BLOCKS=$(python -c "from transformers import AutoConfig; print(AutoConfig.from_pretrained('$MODEL_NAME').num_hidden_layers)")
 
-          python -m petals.cli.run_server $MODEL_NAME \
+          python -m drift.cli.run_server $MODEL_NAME \
             --device cpu --torch_dtype float32 --initial_peers $INITIAL_PEERS \
             --identity_path tests/server2.id --num_blocks $NUM_BLOCKS --throughput 1 &> server1.log &
           SERVER1_PID=$!
@@ -80,15 +80,15 @@ jobs:
 
           # [Step 2] Run PyTest
 
-          # Share disk cache between Petals servers, clients, and HF Transformers
-          export TRANSFORMERS_CACHE=~/.cache/petals
+          # Share disk cache between DRIFT-LLM servers, clients, and HF Transformers
+          export TRANSFORMERS_CACHE=~/.cache/drift
 
           # Necessary for @pytest.mark.forked to work properly on macOS, see https://github.com/kevlened/pytest-parallel/issues/93
           export no_proxy=*
           export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 
           # Fail fast instead of retrying for many minutes if the single server is unhealthy.
-          export PETALS_MAX_RETRIES=3
+          export DRIFT_MAX_RETRIES=3
 
           pytest tests --durations=0 --durations-min=1.0 -v
 

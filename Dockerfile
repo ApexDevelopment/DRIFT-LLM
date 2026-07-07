@@ -1,6 +1,6 @@
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 LABEL maintainer="bigscience-workshop"
-LABEL repository="petals"
+LABEL repository="drift"
 
 WORKDIR /home
 # Set en_US.UTF-8 locale by default
@@ -20,13 +20,13 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
 VOLUME /cache
-ENV PETALS_CACHE=/cache
+ENV DRIFT_CACHE=/cache
 ENV UV_LINK_MODE=copy
 
-COPY . petals/
-WORKDIR /home/petals/
+COPY . drift/
+WORKDIR /home/drift/
 RUN uv sync --extra dev --python 3.11
-# Put the project venv on PATH so `python -m petals.cli.*` works directly
-ENV PATH="/home/petals/.venv/bin:${PATH}"
+# Put the project venv on PATH so `python -m drift.cli.*` works directly
+ENV PATH="/home/drift/.venv/bin:${PATH}"
 
 CMD bash

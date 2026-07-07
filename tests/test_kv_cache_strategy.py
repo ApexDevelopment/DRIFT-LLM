@@ -1,5 +1,5 @@
 """
-Offline tests for the pluggable KV-cache strategy (``petals.utils.kv_cache``).
+Offline tests for the pluggable KV-cache strategy (``drift.utils.kv_cache``).
 
 Covers the two things ``TransformerBackend`` delegates to a strategy: correct cache-descriptor
 sizing (head_dim / per-shard KV heads) and a prefill+decode round-trip that mirrors what
@@ -8,7 +8,7 @@ sizing (head_dim / per-shard KV heads) and a prefill+decode round-trip that mirr
 import pytest
 import torch
 
-from petals.utils.kv_cache import StandardGQACache
+from drift.utils.kv_cache import StandardGQACache
 
 ATOL = 3e-5
 
@@ -58,7 +58,7 @@ def test_descriptor_per_shard_kv_heads():
 
 @pytest.mark.parametrize("head_dim", [None, 48])
 def test_standard_gqa_cache_roundtrip(head_dim):
-    from petals.models.llama.block import WrappedLlamaBlock
+    from drift.models.llama.block import WrappedLlamaBlock
 
     torch.manual_seed(0)
     cfg = _llama_config(head_dim=head_dim)

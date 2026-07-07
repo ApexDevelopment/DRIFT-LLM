@@ -8,8 +8,8 @@ download required (does not import test_utils).
 import pytest
 import torch
 
-from petals.models.deepseek_v3.block import WrappedDeepseekV3Block
-from petals.utils.kv_cache import MLACache
+from drift.models.deepseek_v3.block import WrappedDeepseekV3Block
+from drift.utils.kv_cache import MLACache
 
 ATOL = 3e-5
 

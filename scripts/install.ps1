@@ -1,17 +1,17 @@
 # DRIFT-LLM one-line installer for Windows (PowerShell).
 #
-#   irm https://raw.githubusercontent.com/ApexDevelopment/petals/main/scripts/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/ApexDevelopment/DRIFT-LLM/main/scripts/install.ps1 | iex
 #
 # Detects your accelerator, builds the patched hivemind wheel (PyPI ships none for
 # Windows), installs a matching PyTorch build into a local .venv, and installs
-# DRIFT-LLM (the `petals` package). Override the accelerator with
+# DRIFT-LLM (the `drift` package). Override the accelerator with
 # $env:DRIFT_DEVICE = 'cpu' | 'cuda' | 'xpu' before running.
 #
 # Requires uv (https://docs.astral.sh/uv/) and Go (https://go.dev/dl/, for the
 # hivemind wheel build). Linux/macOS users: use scripts/install.sh instead.
 $ErrorActionPreference = 'Stop'
 
-$RepoUrl   = if ($env:DRIFT_REPO_URL) { $env:DRIFT_REPO_URL } else { 'https://github.com/ApexDevelopment/petals' }
+$RepoUrl   = if ($env:DRIFT_REPO_URL) { $env:DRIFT_REPO_URL } else { 'https://github.com/ApexDevelopment/DRIFT-LLM' }
 $Device    = if ($env:DRIFT_DEVICE)   { $env:DRIFT_DEVICE }   else { 'auto' }
 $TorchSpec = 'torch>=2.6,<2.7'
 
@@ -20,13 +20,13 @@ function Die($msg) { Write-Host "[drift] error: $msg" -ForegroundColor Red; exit
 function Has($cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
 # 1. Get the code: reuse the current checkout if we're in one, otherwise clone.
-if ((Test-Path pyproject.toml) -and (Select-String -Path pyproject.toml -Pattern '^name = "petals"' -Quiet)) {
+if ((Test-Path pyproject.toml) -and (Select-String -Path pyproject.toml -Pattern '^name = "drift"' -Quiet)) {
     Log "using the checkout in $(Get-Location)"
 } else {
     if (-not (Has git)) { Die 'git is required to fetch the code' }
     Log "cloning $RepoUrl"
-    git clone --depth 1 $RepoUrl petals
-    Set-Location petals
+    git clone --depth 1 $RepoUrl drift
+    Set-Location drift
 }
 
 # 2. Prerequisites.
@@ -65,5 +65,5 @@ Log 'installing DRIFT-LLM'
 uv pip install -e .
 
 Log 'done.'
-Write-Host "`nStart a swarm on this machine:`n`n    petals up meta-llama/Llama-3.1-8B-Instruct`n" -ForegroundColor Green
-Write-Host 'It prints a "petals up ... --join drift://..." command; run that on your other machines to add their compute.'
+Write-Host "`nStart a swarm on this machine:`n`n    drift up meta-llama/Llama-3.1-8B-Instruct`n" -ForegroundColor Green
+Write-Host 'It prints a "drift up ... --join drift://..." command; run that on your other machines to add their compute.'

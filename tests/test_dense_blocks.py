@@ -1,9 +1,9 @@
 """
 Offline exact-match tests for the dense (MHA/GQA) block wrappers.
 
-These build a tiny randomly-initialized HF model on CPU and check that Petals' block wrapper
+These build a tiny randomly-initialized HF model on CPU and check that DRIFT-LLM' block wrapper
 reproduces the stock decoder layer bit-for-bit at prefill, plus a stepwise round-trip through
-Petals' BLOOM-layout KV cache. They need no swarm, no network and no model download, so unlike
+DRIFT-LLM' BLOOM-layout KV cache. They need no swarm, no network and no model download, so unlike
 ``test_block_exact_match.py`` they do not import ``test_utils`` / require ``INITIAL_PEERS``.
 """
 import pytest
@@ -16,11 +16,11 @@ ATOL = 2e-5
 
 
 def _make(arch):
-    """Return (config, HF model class, Petals block class) with a tiny config for ``arch``."""
+    """Return (config, HF model class, DRIFT-LLM block class) with a tiny config for ``arch``."""
     if arch == "llama":
         from transformers.models.llama import LlamaConfig, LlamaModel
 
-        from petals.models.llama.block import WrappedLlamaBlock
+        from drift.models.llama.block import WrappedLlamaBlock
 
         cfg = LlamaConfig(
             hidden_size=64,
@@ -34,7 +34,7 @@ def _make(arch):
     if arch == "mistral":
         from transformers.models.mistral import MistralConfig, MistralModel
 
-        from petals.models.mistral.block import WrappedMistralBlock
+        from drift.models.mistral.block import WrappedMistralBlock
 
         cfg = MistralConfig(
             hidden_size=64,
@@ -49,7 +49,7 @@ def _make(arch):
     if arch == "qwen2":
         from transformers.models.qwen2 import Qwen2Config, Qwen2Model
 
-        from petals.models.qwen2.block import WrappedQwen2Block
+        from drift.models.qwen2.block import WrappedQwen2Block
 
         cfg = Qwen2Config(
             hidden_size=64,
@@ -63,7 +63,7 @@ def _make(arch):
     if arch == "qwen3":
         from transformers.models.qwen3 import Qwen3Config, Qwen3Model
 
-        from petals.models.qwen3.block import WrappedQwen3Block
+        from drift.models.qwen3.block import WrappedQwen3Block
 
         cfg = Qwen3Config(
             hidden_size=64,
@@ -78,7 +78,7 @@ def _make(arch):
     if arch == "gemma2":
         from transformers.models.gemma2 import Gemma2Config, Gemma2Model
 
-        from petals.models.gemma2.block import WrappedGemma2Block
+        from drift.models.gemma2.block import WrappedGemma2Block
 
         cfg = Gemma2Config(
             hidden_size=64,
@@ -95,7 +95,7 @@ def _make(arch):
     if arch == "gemma3":
         from transformers.models.gemma3 import Gemma3TextConfig, Gemma3TextModel
 
-        from petals.models.gemma3.block import WrappedGemma3Block
+        from drift.models.gemma3.block import WrappedGemma3Block
 
         cfg = Gemma3TextConfig(
             hidden_size=64,

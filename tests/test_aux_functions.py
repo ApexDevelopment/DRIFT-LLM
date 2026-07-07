@@ -5,11 +5,11 @@ import pytest
 import torch
 from hivemind.utils.nested import nested_compare, nested_flatten
 
-from petals import AutoDistributedConfig
-from petals.server.throughput import measure_compute_rps
-from petals.utils.convert_block import QuantType
-from petals.utils.misc import DUMMY, is_dummy
-from petals.utils.packaging import pack_args_kwargs, unpack_args_kwargs
+from drift import AutoDistributedConfig
+from drift.server.throughput import measure_compute_rps
+from drift.utils.convert_block import QuantType
+from drift.utils.misc import DUMMY, is_dummy
+from drift.utils.packaging import pack_args_kwargs, unpack_args_kwargs
 from test_utils import MODEL_NAME
 
 
@@ -18,12 +18,12 @@ def test_bnb_not_imported_when_unnecessary():
     We avoid importing bitsandbytes when it's not used,
     since bitsandbytes doesn't always find correct CUDA libs and may raise exceptions because of that.
 
-    If this test fails, please change your code to import bitsandbytes and/or petals.utils.peft
+    If this test fails, please change your code to import bitsandbytes and/or drift.utils.peft
     in the function's/method's code when it's actually needed instead of importing them in the beginning of the file.
     This won't slow down the code - importing a module for the 2nd time doesn't rerun module code.
     """
 
-    subprocess.check_call([sys.executable, "-c", "import petals, sys; assert 'bitsandbytes' not in sys.modules"])
+    subprocess.check_call([sys.executable, "-c", "import drift, sys; assert 'bitsandbytes' not in sys.modules"])
 
 
 @pytest.mark.forked

@@ -6,9 +6,9 @@ import torch
 from hivemind import DHT
 from hivemind.utils.logging import get_logger
 
-from petals import AutoDistributedConfig
-from petals.client import RemoteSequenceManager, RemoteSequential
-from petals.data_structures import UID_DELIMITER
+from drift import AutoDistributedConfig
+from drift.client import RemoteSequenceManager, RemoteSequential
+from drift.data_structures import UID_DELIMITER
 from test_utils import *
 
 logger = get_logger(__name__)

@@ -6,13 +6,13 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "petals"
+name = "drift"
 dynamic = ["version"]
 description = "Easy way to efficiently run 100B+ language models without high-end GPUs"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "Petals Developers", email = "petals-devs@googlegroups.com" },
+    { name = "DRIFT-LLM Developers", email = "drift-devs@googlegroups.com" },
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -44,7 +44,7 @@ dependencies = [
     "accelerate>=1.0",
     "huggingface-hub>=0.30",
     "tokenizers>=0.21",
-    "transformers>=5.13,<5.14",  # if changed, update the version assert in petals/__init__.py
+    "transformers>=5.13,<5.14",  # if changed, update the version assert in drift/__init__.py
     "speedtest-cli>=2.1.3",
     # PyPI hivemind wheels are Linux/macOS only.  On Windows install the patched wheel produced by
     # scripts/build_hivemind_windows.py before `pip install -e .` (see README Windows section).
@@ -56,7 +56,7 @@ dependencies = [
     "sentencepiece>=0.2.0",
     "peft>=0.17",
     "safetensors>=0.4.3",
-    "requests>=2.31",  # used directly by petals; no longer pulled in transitively by huggingface-hub 1.x
+    "requests>=2.31",  # used directly by drift; no longer pulled in transitively by huggingface-hub 1.x
     "Dijkstar>=2.6.0",
     "numpy>=1.26",  # numpy 2 enabled in Phase 7 (hivemind>=1.1.12 requires only numpy>=1.17)
 ]
@@ -78,11 +78,11 @@ dev = [
 ]
 
 [project.scripts]
-petals = "petals.cli.__main__:main"
+drift = "drift.cli.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/bigscience-workshop/petals"
-"Bug Tracker" = "https://github.com/bigscience-workshop/petals/issues"
+Homepage = "https://github.com/ApexDevelopment/DRIFT-LLM"
+"Bug Tracker" = "https://github.com/ApexDevelopment/DRIFT-LLM/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -91,7 +91,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.dynamic]
-version = { attr = "petals.__version__" }
+version = { attr = "drift.__version__" }
 
 [tool.pytest.ini_options]
 # huggingface-hub 1.x pulls in anyio, whose pytest plugin autoloads but requires pytest >=7

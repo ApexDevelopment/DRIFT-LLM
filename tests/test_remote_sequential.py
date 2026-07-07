@@ -6,10 +6,10 @@ from hivemind.proto import runtime_pb2
 from hivemind.utils.logging import get_logger
 from hivemind.utils.tensor_descr import BatchTensorDescriptor
 
-from petals import AutoDistributedConfig
-from petals.client import RemoteSequenceManager, RemoteSequential
-from petals.data_structures import UID_DELIMITER
-from petals.server.from_pretrained import load_pretrained_block
+from drift import AutoDistributedConfig
+from drift.client import RemoteSequenceManager, RemoteSequential
+from drift.data_structures import UID_DELIMITER
+from drift.server.from_pretrained import load_pretrained_block
 from test_utils import *
 
 logger = get_logger(__name__)
