@@ -82,9 +82,8 @@ class WrappedGQABlock(BloomLayoutCacheMixin):
     def _build_causal_mask(self, hidden_states, attention_mask, past_key_values, position_ids):
         # Mistral/Qwen enable a sliding window via config; honor it so tokens past the window
         # don't attend (Llama leaves sliding_window unset and falls through to the dense mask).
-        use_sliding = (
-            getattr(self.config, "sliding_window", None) is not None
-            and getattr(self.config, "use_sliding_window", True)
+        use_sliding = getattr(self.config, "sliding_window", None) is not None and getattr(
+            self.config, "use_sliding_window", True
         )
         mask_fn = create_sliding_window_causal_mask if use_sliding else create_causal_mask
         return mask_fn(self.config, hidden_states, attention_mask, past_key_values, position_ids)

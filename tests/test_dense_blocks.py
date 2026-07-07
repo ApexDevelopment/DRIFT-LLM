@@ -22,50 +22,93 @@ def _make(arch):
 
         from petals.models.llama.block import WrappedLlamaBlock
 
-        cfg = LlamaConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=2,
-                          intermediate_size=128, num_hidden_layers=2, vocab_size=128)
+        cfg = LlamaConfig(
+            hidden_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            vocab_size=128,
+        )
         return cfg, LlamaModel, WrappedLlamaBlock
     if arch == "mistral":
         from transformers.models.mistral import MistralConfig, MistralModel
 
         from petals.models.mistral.block import WrappedMistralBlock
 
-        cfg = MistralConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=2,
-                            intermediate_size=128, num_hidden_layers=2, vocab_size=128, sliding_window=SLIDING_WINDOW)
+        cfg = MistralConfig(
+            hidden_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            vocab_size=128,
+            sliding_window=SLIDING_WINDOW,
+        )
         return cfg, MistralModel, WrappedMistralBlock
     if arch == "qwen2":
         from transformers.models.qwen2 import Qwen2Config, Qwen2Model
 
         from petals.models.qwen2.block import WrappedQwen2Block
 
-        cfg = Qwen2Config(hidden_size=64, num_attention_heads=4, num_key_value_heads=2,
-                          intermediate_size=128, num_hidden_layers=2, vocab_size=128)
+        cfg = Qwen2Config(
+            hidden_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            vocab_size=128,
+        )
         return cfg, Qwen2Model, WrappedQwen2Block
     if arch == "qwen3":
         from transformers.models.qwen3 import Qwen3Config, Qwen3Model
 
         from petals.models.qwen3.block import WrappedQwen3Block
 
-        cfg = Qwen3Config(hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=48,
-                          intermediate_size=128, num_hidden_layers=2, vocab_size=128)
+        cfg = Qwen3Config(
+            hidden_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=48,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            vocab_size=128,
+        )
         return cfg, Qwen3Model, WrappedQwen3Block
     if arch == "gemma2":
         from transformers.models.gemma2 import Gemma2Config, Gemma2Model
 
         from petals.models.gemma2.block import WrappedGemma2Block
 
-        cfg = Gemma2Config(hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                           intermediate_size=128, num_hidden_layers=4, vocab_size=128,
-                           sliding_window=SLIDING_WINDOW, query_pre_attn_scalar=16)
+        cfg = Gemma2Config(
+            hidden_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            intermediate_size=128,
+            num_hidden_layers=4,
+            vocab_size=128,
+            sliding_window=SLIDING_WINDOW,
+            query_pre_attn_scalar=16,
+        )
         return cfg, Gemma2Model, WrappedGemma2Block
     if arch == "gemma3":
         from transformers.models.gemma3 import Gemma3TextConfig, Gemma3TextModel
 
         from petals.models.gemma3.block import WrappedGemma3Block
 
-        cfg = Gemma3TextConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                               intermediate_size=128, num_hidden_layers=7, vocab_size=128,
-                               sliding_window=SLIDING_WINDOW, sliding_window_pattern=6, query_pre_attn_scalar=64)
+        cfg = Gemma3TextConfig(
+            hidden_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            intermediate_size=128,
+            num_hidden_layers=7,
+            vocab_size=128,
+            sliding_window=SLIDING_WINDOW,
+            sliding_window_pattern=6,
+            query_pre_attn_scalar=64,
+        )
         return cfg, Gemma3TextModel, WrappedGemma3Block
     raise ValueError(arch)
 

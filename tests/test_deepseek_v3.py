@@ -18,11 +18,25 @@ def _tiny_config(impl="eager"):
     from transformers.models.deepseek_v3 import DeepseekV3Config
 
     cfg = DeepseekV3Config(
-        hidden_size=64, intermediate_size=128, num_hidden_layers=3, num_attention_heads=4,
-        num_key_value_heads=4, vocab_size=128,
-        q_lora_rank=24, kv_lora_rank=16, qk_rope_head_dim=8, qk_nope_head_dim=16, v_head_dim=16,
-        n_routed_experts=4, num_experts_per_tok=2, n_shared_experts=1, moe_intermediate_size=32,
-        n_group=1, topk_group=1, first_k_dense_replace=1, norm_topk_prob=True,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=3,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        vocab_size=128,
+        q_lora_rank=24,
+        kv_lora_rank=16,
+        qk_rope_head_dim=8,
+        qk_nope_head_dim=16,
+        v_head_dim=16,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+        n_shared_experts=1,
+        moe_intermediate_size=32,
+        n_group=1,
+        topk_group=1,
+        first_k_dense_replace=1,
+        norm_topk_prob=True,
     )
     cfg._attn_implementation = impl
     return cfg

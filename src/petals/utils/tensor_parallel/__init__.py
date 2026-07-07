@@ -16,9 +16,9 @@ from petals.utils.tensor_parallel.slicer import Config
 from petals.utils.tensor_parallel.wrapper import PerDeviceTensors, TensorParallel
 
 __all__ = [
-	"TensorParallel",
-	"PerDeviceTensors",
-	"Config",
-	"get_tensor_parallel_config",
-	"get_bloom_config",
+    "TensorParallel",
+    "PerDeviceTensors",
+    "Config",
+    "get_tensor_parallel_config",
+    "get_bloom_config",
 ]

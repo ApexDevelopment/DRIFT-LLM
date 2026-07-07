@@ -38,29 +38,61 @@ def _make(arch):
 
         from petals.models.llama.block import WrappedLlamaBlock
 
-        return LlamaConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=2,
-                           intermediate_size=128, num_hidden_layers=2, vocab_size=128), WrappedLlamaBlock
+        return (
+            LlamaConfig(
+                hidden_size=64,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                intermediate_size=128,
+                num_hidden_layers=2,
+                vocab_size=128,
+            ),
+            WrappedLlamaBlock,
+        )
     if arch == "qwen3":
         from transformers.models.qwen3 import Qwen3Config
 
         from petals.models.qwen3.block import WrappedQwen3Block
 
-        return Qwen3Config(hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=48,
-                           intermediate_size=128, num_hidden_layers=2, vocab_size=128), WrappedQwen3Block
+        return (
+            Qwen3Config(
+                hidden_size=64,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                head_dim=48,
+                intermediate_size=128,
+                num_hidden_layers=2,
+                vocab_size=128,
+            ),
+            WrappedQwen3Block,
+        )
     if arch == "gemma3":
         from transformers.models.gemma3 import Gemma3TextConfig
 
         from petals.models.gemma3.block import WrappedGemma3Block
 
-        return Gemma3TextConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                                intermediate_size=128, num_hidden_layers=2, vocab_size=128,
-                                sliding_window=8, sliding_window_pattern=6, query_pre_attn_scalar=64), WrappedGemma3Block
+        return (
+            Gemma3TextConfig(
+                hidden_size=64,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                head_dim=16,
+                intermediate_size=128,
+                num_hidden_layers=2,
+                vocab_size=128,
+                sliding_window=8,
+                sliding_window_pattern=6,
+                query_pre_attn_scalar=64,
+            ),
+            WrappedGemma3Block,
+        )
     raise ValueError(arch)
 
 
 @pytest.mark.parametrize("arch", ["llama", "qwen3", "gemma3"])
 def test_sdpa_matches_eager(arch):
     """For the sdpa-safe archs, swapping eager -> sdpa must not change results (fp32, CPU)."""
+
     def build(impl):
         torch.manual_seed(0)
         cfg, BlockCls = _make(arch)

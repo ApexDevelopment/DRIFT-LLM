@@ -17,8 +17,14 @@ def _llama_config(head_dim=None):
     from transformers.models.llama import LlamaConfig
 
     hidden, heads, kv = 64, 4, 2
-    kwargs = dict(hidden_size=hidden, num_attention_heads=heads, num_key_value_heads=kv,
-                  intermediate_size=128, num_hidden_layers=2, vocab_size=128)
+    kwargs = dict(
+        hidden_size=hidden,
+        num_attention_heads=heads,
+        num_key_value_heads=kv,
+        intermediate_size=128,
+        num_hidden_layers=2,
+        vocab_size=128,
+    )
     if head_dim is not None:
         kwargs["head_dim"] = head_dim
     cfg = LlamaConfig(**kwargs)
@@ -43,9 +49,7 @@ def test_descriptor_per_shard_kv_heads():
     cfg = _llama_config()  # 4 query heads, 2 KV heads, groups=2, head_dim=16
     strategy = StandardGQACache(cfg)
     devices = [torch.device("cpu"), torch.device("cpu")]
-    descriptors = strategy.get_cache_descriptors(
-        1, 32, dtype=torch.float32, devices=devices, shard_num_heads=[2, 2]
-    )
+    descriptors = strategy.get_cache_descriptors(1, 32, dtype=torch.float32, devices=devices, shard_num_heads=[2, 2])
     assert len(descriptors) == 4  # (key, value) per shard
     for keys, values in (descriptors[0:2], descriptors[2:4]):
         assert keys.shape == (1, 1, 16, 32)  # 2 query heads // groups(2) == 1 KV head per shard

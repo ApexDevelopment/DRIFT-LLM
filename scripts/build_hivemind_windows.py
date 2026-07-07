@@ -56,7 +56,9 @@ def run(cmd, **kwargs):
 
 def ensure_pip() -> None:
     """Make sure `sys.executable -m pip` works, including in uv venvs created without pip."""
-    probe = subprocess.run([sys.executable, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    probe = subprocess.run(
+        [sys.executable, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
     if probe.returncode == 0:
         return
     run([sys.executable, "-m", "ensurepip", "--upgrade"])
@@ -147,7 +149,7 @@ def main() -> None:
 
     print(f"\nSuccess! Wheel built: {wheels[-1]}")
     print(f"\nInstall with:")
-    print(f"  pip install \"{wheels[-1]}\"")
+    print(f'  pip install "{wheels[-1]}"')
     print("Then install petals (hivemind excluded by sys_platform marker):")
     print("  pip install -e .")
 
