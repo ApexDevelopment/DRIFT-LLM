@@ -3,7 +3,6 @@ import re
 import time
 from typing import List, Optional, Sequence, Union
 
-import bitsandbytes as bnb
 import torch
 import torch.nn as nn
 import transformers
@@ -20,6 +19,13 @@ from petals.server.block_utils import get_model_block, resolve_block_dtype
 from petals.utils.convert_block import QuantType
 from petals.utils.disk_cache import allow_cache_reads, allow_cache_writes, free_disk_space_for, get_file_from_repo
 from petals.utils.misc import get_size_in_bytes
+
+try:
+    import bitsandbytes as bnb
+except ImportError:
+    # bitsandbytes provides CUDA-only int8/nf4 quantization and ships no macOS wheels. It's only
+    # needed to wrap already-quantized layers below; off CUDA there are none, so run without it.
+    bnb = None
 
 logger = get_logger(__name__)
 
@@ -180,12 +186,20 @@ class LoraLinear(AdapterContextMixin, lora.Linear):
         self.is_target_conv_1d_layer = False
 
 
-class LoraLinear8bitLt(LoraLinear, lora.Linear8bitLt):
-    """LoRA linear 8-bit with outliers that uses adapter selected via using_adapter"""
+# peft resolves lora.Linear8bitLt / lora.Linear4bit only when bitsandbytes is installed (its
+# module __getattr__ raises AttributeError otherwise), so define these quantized LoRA subclasses
+# and the type tuple below only in that case. Off CUDA there are no quantized layers to wrap.
+if bnb is not None:
 
+    class LoraLinear8bitLt(LoraLinear, lora.Linear8bitLt):
+        """LoRA linear 8-bit with outliers that uses adapter selected via using_adapter"""
 
-class LoraLinear4bit(LoraLinear, lora.Linear4bit):
-    """LoRA linear 4-bit that uses adapter selected via using_adapter"""
+    class LoraLinear4bit(LoraLinear, lora.Linear4bit):
+        """LoRA linear 4-bit that uses adapter selected via using_adapter"""
+
+    _LORA_LAYER_TYPES = (lora.Linear, lora.Linear8bitLt, lora.Linear4bit)
+else:
+    _LORA_LAYER_TYPES = (lora.Linear,)
 
 
 def create_lora_adapter(block):
@@ -196,9 +210,9 @@ def create_lora_adapter(block):
             lora_class = None
             if isinstance(child, nn.Linear):
                 lora_class = LoraLinear
-            elif isinstance(child, bnb.nn.Linear8bitLt):
+            elif bnb is not None and isinstance(child, bnb.nn.Linear8bitLt):
                 lora_class = LoraLinear8bitLt
-            elif isinstance(child, bnb.nn.Linear4bit):
+            elif bnb is not None and isinstance(child, bnb.nn.Linear4bit):
                 lora_class = LoraLinear4bit
             if lora_class:
                 lora_wrapped_child = lora_class(
@@ -215,7 +229,7 @@ def add_adapter_to_block(block, block_index, adapter_name, peft_config, peft_sta
 
     for _, module in block.named_modules():
         for child_name, child in module.named_children():
-            if not isinstance(child, (lora.Linear, lora.Linear8bitLt, lora.Linear4bit)):
+            if not isinstance(child, _LORA_LAYER_TYPES):
                 continue
 
             if child_name in peft_config["target_modules"] or (
