@@ -16,7 +16,7 @@ from petals.utils.version import validate_version
 logger = get_logger(__name__)
 
 
-def main():
+def build_parser() -> configargparse.ArgParser:
     # fmt:off
     parser = configargparse.ArgParser(default_config_files=["config.yml"],
                                       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -176,9 +176,15 @@ def main():
                         help="List of pre-loaded LoRA adapters that can be used for inference or training")
 
     # fmt:on
-    args = vars(parser.parse_args())
-    args.pop("config", None)
+    return parser
 
+
+def server_from_args(args: dict) -> Server:
+    """Build a Server from a parsed-args dict (as produced by build_parser()).
+
+    Shared by `petals server` (run_server.main) and the `petals up` launcher so both
+    expose exactly the same configuration surface. Mutates and consumes ``args``.
+    """
     args["converted_model_name_or_path"] = args.pop("model") or args["converted_model_name_or_path"]
 
     host_maddrs = args.pop("host_maddrs")
@@ -227,13 +233,21 @@ def main():
         # Necessary to prevent the server from freezing after forks
         torch.set_num_threads(1)
 
-    server = Server(
+    return Server(
         **args,
         host_maddrs=host_maddrs,
         announce_maddrs=announce_maddrs,
         compression=compression,
         max_disk_space=max_disk_space,
     )
+
+
+def main():
+    parser = build_parser()
+    args = vars(parser.parse_args())
+    args.pop("config", None)
+
+    server = server_from_args(args)
     try:
         server.run()
     except KeyboardInterrupt:
