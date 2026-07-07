@@ -1,4 +1,6 @@
-# Self-hosted distributed inference and fine-tuning of large language models
+# DRIFT-LLM
+
+**D**ist**r**ibuted **I**nference and **F**ine-**T**uning of **L**arge **L**anguage **M**odels
 
 Run large language models — **Llama 3.1** (up to 405B), **Qwen 2.5/3**, **Gemma 2/3**, **Mistral**, **Mixtral**, **DeepSeek-V3**, **Falcon**, or **BLOOM** — across a cluster of your own machines. Each machine serves a slice of the model's layers; a client stitches them together and runs inference or fine-tuning as if the whole model were local.
 
