@@ -34,5 +34,7 @@ class DistributedMistralConfig(MistralConfig, ClientConfig, PTuneConfig, LMHeadC
 
         result = super().from_pretrained(model_name_or_path, *args, dht_prefix=dht_prefix, **kwargs)
         config = result[0] if isinstance(result, tuple) else result
-        config.use_cache = True  # use_cache=False leads to identical results but is slower and not supported by DRIFT-LLM
+        config.use_cache = (
+            True  # use_cache=False leads to identical results but is slower and not supported by DRIFT-LLM
+        )
         return result
