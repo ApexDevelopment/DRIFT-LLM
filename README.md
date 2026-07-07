@@ -1,10 +1,10 @@
 # DRIFT-LLM
 
-**D**ist**r**ibuted **I**nference and **F**ine-**T**uning of **L**arge **L**anguage **M**odels
+**D**ist**R**ibuted **I**nference and **F**ine-**T**uning of **L**arge **L**anguage **M**odels
 
-Run large language models — **Llama 3.1** (up to 405B), **Qwen 2.5/3**, **Gemma 2/3**, **Mistral**, **Mixtral**, **DeepSeek-V3**, **Falcon**, or **BLOOM** — across a cluster of your own machines. Each machine serves a slice of the model's layers; a client stitches them together and runs inference or fine-tuning as if the whole model were local.
+Run large language models across a cluster of your own machines. Each machine serves a slice of the model's layers; a client stitches them together and runs inference or fine-tuning as if the whole model were local.
 
-This is a hard fork of [Petals](https://github.com/bigscience-workshop/petals), which is no longer maintained. It is modernized (current `transformers`, PyTorch, and `hivemind`) and refocused: instead of one large public swarm, it targets **private clusters** — an individual with a few GPUs, a lab, or a group of friends pooling their own machines. There is no public network to join and no central coordinator; you run the whole thing yourself.
+This is a fork of [Petals](https://github.com/bigscience-workshop/petals), which is no longer maintained. It is modernized (newer `transformers`, PyTorch, and `hivemind`) and refocused: instead of one large public swarm, it targets private clusters. There is no "main" public network to join and no central coordinator; you run the whole thing yourself.
 
 ## How it works
 
@@ -12,7 +12,7 @@ This is a hard fork of [Petals](https://github.com/bigscience-workshop/petals), 
 - Each **server** loads a few blocks (as many as its GPU or CPU can hold) and announces them to a private DHT.
 - A **client** loads only the input/output embeddings, finds a set of servers that together cover every block, and runs a forward or backward pass through them.
 
-You get the ergonomics of a local `transformers` model — full PyTorch access to logits and hidden states, custom sampling, and prompt-tuning — while the weights live across the cluster. The client holds almost nothing, so it runs comfortably on a laptop even for very large models.
+You get the ergonomics of a local `transformers` model (full PyTorch access to logits and hidden states, custom sampling, prompt-tuning) while the weights live across the cluster. The client holds almost nothing, so it runs comfortably on a laptop even for very large models.
 
 ## Run your own cluster
 
@@ -117,15 +117,22 @@ The smoke script starts a local DHT peer, serves all eight tiny Llama blocks, co
 
 ## Supported models
 
-Dense GQA models — **Llama 3.x**, **Qwen 2.5/3**, **Gemma 2/3**, and **Mistral** — plus **Mixtral** (mixture of experts), **DeepSeek-V3** (multi-head latent attention + MoE), **Falcon**, and **BLOOM**. Any checkpoint in one of these architectures on the Hugging Face Hub should work.
+Dense GQA models:
+
+- Llama 3.x
+- Qwen 2.5/3
+- Gemma 2/3
+- Mistral
+
+Plus **Mixtral** (mixture of experts), **DeepSeek-V3** (multi-head latent attention + MoE), **Falcon**, and **BLOOM**. Any checkpoint in one of these architectures on the Hugging Face Hub should work.
 
 ## Security
 
-Running a server does not let others execute arbitrary code on your machine — a server only runs the model's forward and backward pass on the tensors it receives. Still, run a cluster only among machines and people you trust, and keep the DHT port off the public internet unless you intend it to be reachable.
+Running a server **does not** let others execute arbitrary code on your machine. A server only runs the model's forward and backward pass on the tensors it receives. Still, run a cluster only among machines and people you trust, and keep the DHT port off the public internet unless you intend it to be reachable.
 
 ## Contributing
 
-Issues and pull requests are welcome on this repository. For advanced topics that still apply from the upstream project — using multiple GPUs, running custom architectures, or AMD GPU setup — the original [Petals wiki](https://github.com/bigscience-workshop/petals/wiki) remains a useful reference.
+Issues and pull requests are welcome on this repository. For advanced topics that still apply from the upstream project, like using multiple GPUs, running custom architectures, or AMD GPU setup, the original [Petals wiki](https://github.com/bigscience-workshop/petals/wiki) remains a useful reference.
 
 ## Attribution
 
