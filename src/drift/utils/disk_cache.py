@@ -30,7 +30,14 @@ def get_file_from_repo(
 
     Returns the local path to the (cached or freshly downloaded) file, or ``None`` if the file
     does not exist in the repo, or is not cached when ``local_files_only=True``.
+
+    Also supports serving a model straight from a local directory: if ``repo_id`` is a directory,
+    the file is looked up inside it (returning ``None`` when absent) instead of hitting the Hub.
     """
+    if os.path.isdir(repo_id):
+        candidate = os.path.join(repo_id, filename)
+        return candidate if os.path.isfile(candidate) else None
+
     try:
         return huggingface_hub.hf_hub_download(
             repo_id,
