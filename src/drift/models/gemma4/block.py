@@ -66,6 +66,12 @@ class WrappedGemma4Block(WrappedGemmaBlock, Gemma4TextDecoderLayer):
         if shared_kv_states is None:
             shared_kv_states = {}
 
+        # Real inference always supplies per_layer_input; the server's throughput probe (and any other
+        # side-input-free caller) does not. Fall back to zeros so the block still runs there -- the
+        # result is meaningless but the probe only measures compute time.
+        if per_layer_input is None and self.hidden_size_per_layer_input:
+            per_layer_input = hidden_states.new_zeros(batch_size, seq_length, self.hidden_size_per_layer_input)
+
         # Sharing layers attend against the donor's K/V (from `shared_kv_states`), not a local cache,
         # so they keep no BLOOM cache. We still build a length-only cache from the donor's key length
         # so the mask sees the correct number of past keys. Non-sharing layers use the real cache.
