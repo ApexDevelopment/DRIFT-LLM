@@ -104,11 +104,14 @@ class _ServerInferenceSession:
         hypo_ids: torch.LongTensor,
         *,
         step_id: str,
+        per_layer_inputs: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Inference step: send a chunk of input tensors and receive a chunk of outputs
         :prompts: optional DEEP prompts, added to a prefix of each layer's outputs,
           if specified, deep prompts should have shape [num_layers, batch_size, prefix_len, hid_size]
+        :per_layer_inputs: optional Gemma 4 Per-Layer Embeddings for this span's blocks, sliced from
+          the client's [num_layers, batch_size, seq_len, per_layer_dim] tensor; seq-aligned to `inputs`
         """
         if self.closed:
             raise Exception("Session is closed, cannot perform step")
@@ -128,8 +131,12 @@ class _ServerInferenceSession:
         else:
             inputs = inputs[:, -n_input_tokens:]  # No need to pass prefix further
 
-        # serialize inputs and put them into the queue
-        input_tensors, args_structure = pack_args_kwargs(inputs, prompts, hypo_ids)
+        # serialize inputs and put them into the queue. Gemma 4 appends the per-layer inputs as a
+        # fourth tensor; other models keep the original 3-tensor layout for wire compatibility.
+        if per_layer_inputs is None or is_dummy(per_layer_inputs):
+            input_tensors, args_structure = pack_args_kwargs(inputs, prompts, hypo_ids)
+        else:
+            input_tensors, args_structure = pack_args_kwargs(inputs, prompts, hypo_ids, per_layer_inputs)
 
         request_metadata = dict(session_id=self.session_id, step_id=step_id)
         if not self.stepped:
@@ -289,6 +296,7 @@ class InferenceSession:
         inputs: torch.Tensor,
         prompts: Optional[torch.Tensor] = None,
         hypo_ids: Optional[torch.Tensor] = None,
+        per_layer_inputs: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         assert not self._closed
         if torch.is_grad_enabled():
@@ -303,6 +311,16 @@ class InferenceSession:
             assert prompts.shape[2] <= inputs.shape[1]
             assert prompts.shape[3] == inputs.shape[2]
 
+        if per_layer_inputs is None or is_dummy(per_layer_inputs):
+            per_layer_inputs = DUMMY
+        else:
+            assert (
+                per_layer_inputs.ndim == 4
+            ), "per_layer_inputs should have shape [num_blocks, batch_size, seq_len, per_layer_dim]"
+            assert per_layer_inputs.shape[0] == self.num_blocks
+            assert per_layer_inputs.shape[1] in (inputs.shape[0], 1)
+            assert per_layer_inputs.shape[2] == inputs.shape[1]
+
         if hypo_ids is None or is_dummy(hypo_ids):
             hypo_ids = DUMMY_INT64
         else:
@@ -313,6 +331,7 @@ class InferenceSession:
         inputs_dtype = inputs.dtype
         inputs = inputs.cpu()
         prompts = prompts.cpu()
+        per_layer_inputs = per_layer_inputs.cpu()
         hypo_ids = hypo_ids.cpu()
         step_id = str(uuid.uuid4())
 
@@ -334,11 +353,17 @@ class InferenceSession:
 
                     server_session = self._server_sessions[server_idx]
                     assert server_session.position == self.position, f"{server_session.position} and {self.position}"
+                    span_per_layer_inputs = (
+                        per_layer_inputs
+                        if is_dummy(per_layer_inputs)
+                        else per_layer_inputs[server_session.span.start : server_session.span.end]
+                    )
                     inputs = server_session.step(
                         inputs,
                         prompts[server_session.span.start : server_session.span.end],
                         hypo_ids,
                         step_id=step_id,
+                        per_layer_inputs=span_per_layer_inputs,
                     )
 
                     server_idx += 1

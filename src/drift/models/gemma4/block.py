@@ -104,7 +104,11 @@ class WrappedGemma4Block(WrappedGemmaBlock, Gemma4TextDecoderLayer):
                 cache_position=cache_position,
             )
 
-        if use_cache and not self.is_kv_shared_layer:
+        if use_cache:
+            # Sharing layers keep no cache of their own -- they attend against the donor's K/V from
+            # `shared_kv_states`. Return `None` in the cache slot so the backend skips the write-back.
+            if self.is_kv_shared_layer:
+                return hidden_states, None
             present = past_key_values.layers[0]
             return hidden_states, self._reorder_cache_to_bloom((present.keys, present.values), batch_size)
         return (hidden_states,)

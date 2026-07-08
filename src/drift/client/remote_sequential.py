@@ -50,13 +50,24 @@ class RemoteSequential(nn.Module):
 
         self._active_session = ContextVar("active_session", default=None)
 
-    def forward(self, inputs: torch.Tensor, prompts: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        prompts: Optional[torch.Tensor] = None,
+        per_layer_inputs: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> torch.Tensor:
         assert inputs.ndim == 3, "inputs must be a tensor of shape [batch_size, seq_length, hidden_size]"
         if self.active_session is None:
             assert all(v is None for v in kwargs.values()), f"Extra kwargs are not supported in forward: {kwargs}"
+            if per_layer_inputs is not None:
+                raise NotImplementedError(
+                    "per_layer_inputs (Gemma 4 Per-Layer Embeddings) are currently supported only during "
+                    "inference, not in the training forward pass"
+                )
             return _RemoteSequentialAutogradFunction.apply(inputs, prompts, self.sequence_manager)
         else:
-            return self.active_session.step(inputs, prompts, **kwargs)
+            return self.active_session.step(inputs, prompts, per_layer_inputs=per_layer_inputs, **kwargs)
 
     @property
     def active_session(self) -> Optional[InferenceSession]:

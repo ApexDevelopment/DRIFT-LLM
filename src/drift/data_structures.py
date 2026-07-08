@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import pydantic.v1 as pydantic
+import torch
 from hivemind.moe.expert_uid import ExpertUID
 from hivemind.p2p import PeerID
 
@@ -115,3 +116,9 @@ class InferenceMetadata:
     prefix_length: int
     cache_handles: Tuple[Handle, ...]
     active_adapter: Optional[str]
+    # Optional per-block side inputs threaded to the block during inference (used by Gemma 4):
+    #   per_layer_input: the [batch, seq, per_layer_dim] Per-Layer Embedding slice for this block.
+    #   shared_kv_states: donor keys/values keyed by attention type, for KV-sharing consumer blocks.
+    # Excluded from eq/hash since tensors are unhashable (InferenceMetadata is never used as a key).
+    per_layer_input: Optional[torch.Tensor] = dataclasses.field(default=None, compare=False)
+    shared_kv_states: Optional[Dict[str, Any]] = dataclasses.field(default=None, compare=False)

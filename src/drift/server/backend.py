@@ -146,8 +146,16 @@ class TransformerBackend(ModuleBackend):
                 layer_past = self.cache_strategy.select_layer_past(
                     cache_tensors, inference_info.prefix_length, num_shards=len(self.module.module_shards)
                 )
-                output_hidden_states, new_kvs = self._forward_chunked(hidden_states, layer_past, max_chunk_length)
-                self.cache_strategy.update_cache(cache_tensors, new_kvs, inference_info.prefix_length)
+                output_hidden_states, new_kvs = self._forward_chunked(
+                    hidden_states,
+                    layer_past,
+                    max_chunk_length,
+                    per_layer_input=inference_info.per_layer_input,
+                    shared_kv_states=inference_info.shared_kv_states,
+                )
+                # KV-sharing consumer blocks (Gemma 4) keep no cache of their own, so new_kvs is None.
+                if new_kvs is not None:
+                    self.cache_strategy.update_cache(cache_tensors, new_kvs, inference_info.prefix_length)
                 return (output_hidden_states,)
 
     def _paged_inference_step(
@@ -163,7 +171,14 @@ class TransformerBackend(ModuleBackend):
             pool.scatter(slot_id, new_kvs, inference_info.prefix_length)
             return (output_hidden_states,)
 
-    def _forward_chunked(self, hidden_states: torch.Tensor, layer_past, max_chunk_length: int):
+    def _forward_chunked(
+        self,
+        hidden_states: torch.Tensor,
+        layer_past,
+        max_chunk_length: int,
+        per_layer_input: Optional[torch.Tensor] = None,
+        shared_kv_states: Optional[Dict[str, Any]] = None,
+    ):
         # We chunk the inputs so that peak memory for long sequences fits into `autograd_memory`
         # reserved in `Server._choose_num_blocks()`. This saves us from OOMs if `max_chunk_size_bytes`
         # is at least 4-6x less than `autograd_memory`.
@@ -171,8 +186,16 @@ class TransformerBackend(ModuleBackend):
         output_hidden_states = torch.empty_like(hidden_states) if seq_len > max_chunk_length else None
         for offset in range(0, seq_len, max_chunk_length):
             hidden_states_chunk = hidden_states[:, offset : offset + max_chunk_length, :]
+            # Per-layer inputs are seq-aligned to the hidden states, so slice them the same way; the
+            # donor K/V dict (shared_kv_states) is not seq-chunked -- consumer blocks read the full donor
+            # K/V, and donor blocks write the full-length K/V into it (last chunk wins).
+            extra_kwargs = {}
+            if per_layer_input is not None:
+                extra_kwargs["per_layer_input"] = per_layer_input[:, offset : offset + max_chunk_length, :]
+            if shared_kv_states is not None:
+                extra_kwargs["shared_kv_states"] = shared_kv_states
             output_hidden_states_chunk, new_kvs = self.module.forward(
-                hidden_states_chunk, layer_past=layer_past, use_cache=True
+                hidden_states_chunk, layer_past=layer_past, use_cache=True, **extra_kwargs
             )
             if seq_len > max_chunk_length:
                 output_hidden_states[:, offset : offset + max_chunk_length] = output_hidden_states_chunk

@@ -172,7 +172,8 @@ async def iterate_rpc_inference(
             # TODO: kwargs currently is unused, it can be used later for peft-like adaptation
             flat_tensors, kwargs = unpack_args_kwargs(flat_tensors, args_structure)
 
-        hidden_states, prompts, hypo_ids, *_ = flat_tensors
+        hidden_states, prompts, hypo_ids, *rest = flat_tensors
+        per_layer_inputs = rest[0] if rest else None  # Gemma 4 Per-Layer Embedding slices (optional)
         batch_size, length_increment, _ = hidden_states.shape
 
         # Cast inputs to backend dtype
@@ -189,6 +190,22 @@ async def iterate_rpc_inference(
 
         if not (len(requested_backends) == len(prompts)):
             raise ValueError(f"Received {len(prompts)} prompts for {len(requested_backends)} backends")
+
+        # parse per-layer inputs (optional; one [batch, seq, per_layer_dim] tensor per backend)
+        has_per_layer_inputs = per_layer_inputs is not None and not is_dummy(per_layer_inputs)
+        if not has_per_layer_inputs:
+            per_layer_inputs = [None] * len(requested_backends)
+        else:
+            per_layer_inputs = [p.squeeze(0) for p in per_layer_inputs.to(requested_backends[0].dtype).split(1, dim=0)]
+        if len(requested_backends) != len(per_layer_inputs):
+            raise ValueError(
+                f"Received {len(per_layer_inputs)} per-layer inputs for {len(requested_backends)} backends"
+            )
+
+        # Donor keys/values for KV-sharing (Gemma 4) live in this per-span dict: donor blocks write it,
+        # consumer blocks read it. It is shared by reference across all backends in this span so a donor
+        # and a consumer hosted on the same server interoperate without touching the wire.
+        shared_kv_states = {}
 
         if prefix_length + length_increment > max_length:
             raise ValueError(
@@ -212,15 +229,33 @@ async def iterate_rpc_inference(
             assert hidden_states.ndim == 3, f"hidden states must be a single 3d tensor"
             if can_merge_pools:
                 inference_infos = tuple(
-                    InferenceMetadata(uid, prefix_length, tuple(handles), active_adapter)
-                    for uid, handles in zip(requested_uids, cache_handles)
+                    InferenceMetadata(
+                        uid,
+                        prefix_length,
+                        tuple(handles),
+                        active_adapter,
+                        per_layer_input=per_layer_input,
+                        shared_kv_states=shared_kv_states,
+                    )
+                    for uid, handles, per_layer_input in zip(requested_uids, cache_handles, per_layer_inputs)
                 )
                 (hidden_states,) = await requested_backends[0].inference_pool.submit_task(
                     hidden_states, hypo_ids, inference_infos, *prompts, priority=priority
                 )
             else:
-                for backend, uid, handles, prompt in zip(requested_backends, requested_uids, cache_handles, prompts):
-                    inference_infos = (InferenceMetadata(uid, prefix_length, tuple(handles), active_adapter),)
+                for backend, uid, handles, prompt, per_layer_input in zip(
+                    requested_backends, requested_uids, cache_handles, prompts, per_layer_inputs
+                ):
+                    inference_infos = (
+                        InferenceMetadata(
+                            uid,
+                            prefix_length,
+                            tuple(handles),
+                            active_adapter,
+                            per_layer_input=per_layer_input,
+                            shared_kv_states=shared_kv_states,
+                        ),
+                    )
                     (hidden_states,) = await backend.inference_pool.submit_task(
                         hidden_states, hypo_ids, inference_infos, prompt, priority=priority
                     )
@@ -230,7 +265,7 @@ async def iterate_rpc_inference(
             serialize_torch_tensor(result.to(proto.dtype), proto.compression, allow_inplace=True)
             for result, proto in zip((hidden_states,), nested_flatten(requested_backends[-1].outputs_schema))
         ]
-        can_push = not has_prompts
+        can_push = not has_prompts and not has_per_layer_inputs
         yield output_tensors, can_push, step_metadata
 
         # prepare for next step
