@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from itertools import chain
-from typing import Sequence
+from typing import Optional, Sequence
 
 import torch
 from hivemind.utils.tensor_descr import TensorDescriptor
@@ -49,11 +49,14 @@ class KVCacheStrategy(ABC):
         dtype: torch.dtype,
         devices: Sequence[torch.device],
         shard_num_heads: Sequence[int],
+        head_dim: Optional[int] = None,
     ) -> Sequence[TensorDescriptor]:
         """Describe the cache tensors to allocate for one inference session.
 
         ``devices`` / ``shard_num_heads`` describe the tensor-parallel shards (one entry each);
-        for a single-device block both have length one.
+        for a single-device block both have length one. ``head_dim``, when given, overrides the
+        config-derived head dim -- Gemma 4's full-attention layers use a wider ``global_head_dim``
+        than sliding layers, so the block's actual head_dim can't be read off the (single) config.
         """
 
     @abstractmethod
@@ -91,10 +94,16 @@ class StandardGQACache(KVCacheStrategy):
         dtype: torch.dtype,
         devices: Sequence[torch.device],
         shard_num_heads: Sequence[int],
+        head_dim: Optional[int] = None,
     ) -> Sequence[TensorDescriptor]:
-        # Prefer an explicit head_dim: several archs (Gemma, some Qwen3) set one that differs from
-        # hidden_size // num_attention_heads, which would otherwise mis-size the cache tensors.
-        head_dim = getattr(self.config, "head_dim", None) or self.config.hidden_size // self.config.num_attention_heads
+        # Prefer the block's actual head_dim (Gemma 4 full-attention layers use `global_head_dim`,
+        # wider than sliding layers); then an explicit config head_dim (several archs set one that
+        # differs from hidden_size // num_attention_heads); then the standard derivation.
+        if head_dim is None:
+            head_dim = (
+                getattr(self.config, "head_dim", None)
+                or self.config.hidden_size // self.config.num_attention_heads
+            )
         cache_tensors = []
         for device, num_heads in zip(devices, shard_num_heads):
             num_kv_heads = num_heads // self.config.num_key_value_groups
@@ -149,6 +158,7 @@ class MLACache(StandardGQACache):
         dtype: torch.dtype,
         devices: Sequence[torch.device],
         shard_num_heads: Sequence[int],
+        head_dim: Optional[int] = None,  # unused: MLA key/value head dims are asymmetric (see below)
     ) -> Sequence[TensorDescriptor]:
         key_head_dim = self.config.qk_nope_head_dim + self.config.qk_rope_head_dim
         value_head_dim = self.config.v_head_dim

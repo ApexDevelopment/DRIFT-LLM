@@ -64,12 +64,22 @@ class TransformerBackend(ModuleBackend):
         self.dtype = backend_dtype
         self.dtype_bytes = get_size_in_bytes(self.dtype)
         self.shard_num_heads = []
+        shard_head_dims = []
         for shard in self.module.module_shards:
             for submodule in shard.modules():
                 if isinstance(submodule, config.attn_class):
                     self.shard_num_heads.append(get_num_attention_heads(submodule, config))
+                    shard_head_dims.append(getattr(submodule, "head_dim", None))
         assert len(self.shard_num_heads) == len(self.module.devices)
         assert sum(self.shard_num_heads) == config.num_attention_heads
+
+        # Some architectures (Gemma 4) use a per-layer-type head_dim: full-attention layers use
+        # `global_head_dim`, sliding layers use `head_dim`. The attention module carries the value
+        # actually in use, so derive the cache head_dim from it rather than the (single) config field.
+        # All shards of one block share a layer_type, hence one head_dim; None means "fall back to config".
+        block_head_dims = {d for d in shard_head_dims if d is not None}
+        assert len(block_head_dims) <= 1, f"Inconsistent head_dim across shards: {shard_head_dims}"
+        self.cache_head_dim = block_head_dims.pop() if block_head_dims else None
 
         # The cache layout (descriptor shapes, prefix selection, write-back) is owned by a
         # pluggable strategy so that non-standard layouts (sliding window, MLA) can be added
@@ -115,6 +125,7 @@ class TransformerBackend(ModuleBackend):
             dtype=self.dtype,
             devices=self.module.devices,
             shard_num_heads=self.shard_num_heads,
+            head_dim=self.cache_head_dim,
         )
 
     def forward(self, *inputs: Union[torch.Tensor, str]) -> Tuple[torch.Tensor, ...]:
