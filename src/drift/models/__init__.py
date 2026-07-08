@@ -3,6 +3,7 @@ from drift.models.deepseek_v3 import *
 from drift.models.falcon import *
 from drift.models.gemma2 import *
 from drift.models.gemma3 import *
+from drift.models.gemma4 import *
 from drift.models.llama import *
 from drift.models.mistral import *
 from drift.models.mixtral import *
