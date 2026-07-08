@@ -20,6 +20,22 @@ from drift.utils.tensor_parallel import TensorParallel
 logger = get_logger(__name__)
 
 
+def _extract_produced_shared_kv(shared_kv_states: Optional[Dict[str, Any]], seeded_keys: set) -> Tuple[torch.Tensor, ...]:
+    """Flatten the donor K/V a block newly wrote into ``shared_kv_states`` (keys absent from ``seeded_keys``).
+
+    Returns ``(k0, v0, k1, v1, ...)`` in sorted layer-type order so the caller can pair the tensors back
+    with their layer types deterministically without shipping the (string) keys through the tensor pool.
+    """
+    if not shared_kv_states:
+        return ()
+    produced = []
+    for layer_type in sorted(k for k in shared_kv_states if k not in seeded_keys):
+        key, value = shared_kv_states[layer_type]
+        # The task pool moves outputs into shared memory, which needs contiguous tensors.
+        produced.extend((key.contiguous(), value.contiguous()))
+    return tuple(produced)
+
+
 class TransformerBackend(ModuleBackend):
     """A wrapper for a transformer block that can process requests for forward, backward and inference"""
 
@@ -65,13 +81,22 @@ class TransformerBackend(ModuleBackend):
         self.dtype_bytes = get_size_in_bytes(self.dtype)
         self.shard_num_heads = []
         shard_head_dims = []
+        donor_layer_types = set()
         for shard in self.module.module_shards:
             for submodule in shard.modules():
                 if isinstance(submodule, config.attn_class):
                     self.shard_num_heads.append(get_num_attention_heads(submodule, config))
                     shard_head_dims.append(getattr(submodule, "head_dim", None))
+                    # Gemma 4 KV-sharing: a donor layer stores its full-length K/V for the consumer
+                    # layers of the same attention type. Record which type(s) this block donates so the
+                    # server can ship them to a consumer hosted downstream (see block_functions).
+                    if getattr(submodule, "store_full_length_kv", False):
+                        donor_layer_types.add(submodule.layer_type)
         assert len(self.shard_num_heads) == len(self.module.devices)
         assert sum(self.shard_num_heads) == config.num_attention_heads
+
+        # All shards of a block share one attention type, so this block donates 0 or 1 layer type.
+        self.donor_layer_types = sorted(donor_layer_types)
 
         # Some architectures (Gemma 4) use a per-layer-type head_dim: full-attention layers use
         # `global_head_dim`, sliding layers use `head_dim`. The attention module carries the value
@@ -151,6 +176,8 @@ class TransformerBackend(ModuleBackend):
             if self.memory_cache.paged:
                 return self._paged_inference_step(hidden_states, hypo_ids, inference_info)
 
+            shared_kv_states = inference_info.shared_kv_states
+            seeded_kv_keys = set(shared_kv_states) if shared_kv_states else set()
             with self.memory_cache.use_cache(*inference_info.cache_handles) as cache_tensors:
                 self._reorder_cache_inplace(cache_tensors, hypo_ids)
                 max_chunk_length = self._estimate_max_chunk_length(hidden_states, inference_info)
@@ -162,12 +189,15 @@ class TransformerBackend(ModuleBackend):
                     layer_past,
                     max_chunk_length,
                     per_layer_input=inference_info.per_layer_input,
-                    shared_kv_states=inference_info.shared_kv_states,
+                    shared_kv_states=shared_kv_states,
                 )
                 # KV-sharing consumer blocks (Gemma 4) keep no cache of their own, so new_kvs is None.
                 if new_kvs is not None:
                     self.cache_strategy.update_cache(cache_tensors, new_kvs, inference_info.prefix_length)
-                return (output_hidden_states,)
+                # A donor block writes its full-length K/V into shared_kv_states inside this (worker)
+                # process. Return the newly written K/V so it can cross the process/wire boundary to a
+                # consumer hosted downstream -- the mutated dict itself is not visible to the caller.
+                return (output_hidden_states, *_extract_produced_shared_kv(shared_kv_states, seeded_kv_keys))
 
     def _paged_inference_step(
         self, hidden_states: torch.Tensor, hypo_ids: torch.LongTensor, inference_info: InferenceMetadata
@@ -277,8 +307,15 @@ class _MergedInferenceStep:
         assert len(inference_infos) == len(
             optional_prompts
         ), f"found {len(inference_infos)} blocks but {len(optional_prompts)} prompts"
+        # All blocks in a merged span share one shared_kv_states dict (by reference), so a donor and a
+        # consumer on this server interoperate in-process. Snapshot the seeded keys up front so we can
+        # return only the K/V produced *here* for consumers hosted downstream.
+        shared_kv_states = inference_infos[0].shared_kv_states if inference_infos else None
+        seeded_kv_keys = set(shared_kv_states) if shared_kv_states else set()
         for inference_info, optional_prompt in zip(inference_infos, optional_prompts):
             if optional_prompt is not None:
                 hidden_states[:, : optional_prompt.shape[1]] += optional_prompt
-            (hidden_states,) = self.backends[inference_info.uid].inference_step(hidden_states, hypo_ids, inference_info)
-        return (hidden_states,)
+            # inference_step also returns each block's produced donor K/V (for the non-merged path);
+            # here the shared dict already collects them, so keep only the hidden states.
+            hidden_states, *_ = self.backends[inference_info.uid].inference_step(hidden_states, hypo_ids, inference_info)
+        return (hidden_states, *_extract_produced_shared_kv(shared_kv_states, seeded_kv_keys))

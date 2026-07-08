@@ -169,7 +169,7 @@ class TransformerConnectionHandler(ConnectionHandler):
                     requested_backends, batch_size=batch_size, max_length=max_length, timeout=alloc_timeout
                 ) as cache_handles:
                     background_tasks = set()
-                    async for output_tensors, can_push, step_metadata in iterate_rpc_inference(
+                    async for output_tensors, can_push, step_metadata, response_metadata in iterate_rpc_inference(
                         requested_uids=requested_uids,
                         requested_backends=requested_backends,
                         active_adapter=self._get_active_adapter(metadata),
@@ -187,7 +187,10 @@ class TransformerConnectionHandler(ConnectionHandler):
                             task = asyncio.create_task(self._push_outputs(request, output_tensors[0], step_metadata))
                             background_tasks.add(task)  # Keep reference until it is done to save it from GC
                             task.add_done_callback(background_tasks.discard)
-                        yield runtime_pb2.ExpertResponse(tensors=output_tensors)
+                        response = runtime_pb2.ExpertResponse(tensors=output_tensors)
+                        if response_metadata:  # Gemma 4 KV-sharing donor keys/values for downstream spans
+                            response.metadata = MSGPackSerializer.dumps(response_metadata)
+                        yield response
 
             finally:
                 self._log_request("rpc_inference.close", requested_uids, context)

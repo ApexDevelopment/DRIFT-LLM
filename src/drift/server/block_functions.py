@@ -19,6 +19,7 @@ from drift.server.task_prioritizer import TaskPrioritizerBase
 from drift.utils.convert_block import QuantType
 from drift.utils.misc import DUMMY, is_dummy
 from drift.utils.packaging import unpack_args_kwargs
+from drift.utils.shared_kv import flatten_shared_kv, unflatten_shared_kv
 
 # We prioritize short inference requests and make them use a *merged* inference pool,
 # so they are processed without interruptions and extra overheads
@@ -153,7 +154,7 @@ async def iterate_rpc_inference(
     points: int,
     quant_type: QuantType,
     args_structure: Any = None,
-) -> AsyncIterator[Tuple[Sequence[runtime_pb2.Tensor], bool, Dict]]:
+) -> AsyncIterator[Tuple[Sequence[runtime_pb2.Tensor], bool, Dict, Dict]]:
     assert len(cache_handles) == len(requested_backends)
 
     prefix_length = 0
@@ -174,6 +175,7 @@ async def iterate_rpc_inference(
 
         hidden_states, prompts, hypo_ids, *rest = flat_tensors
         per_layer_inputs = rest[0] if rest else None  # Gemma 4 Per-Layer Embedding slices (optional)
+        shared_kv_input_tensors = list(rest[1:])  # Gemma 4 KV-sharing donor K/V from upstream spans (optional)
         batch_size, length_increment, _ = hidden_states.shape
 
         # Cast inputs to backend dtype
@@ -204,8 +206,16 @@ async def iterate_rpc_inference(
 
         # Donor keys/values for KV-sharing (Gemma 4) live in this per-span dict: donor blocks write it,
         # consumer blocks read it. It is shared by reference across all backends in this span so a donor
-        # and a consumer hosted on the same server interoperate without touching the wire.
-        shared_kv_states = {}
+        # and a consumer hosted on the same server interoperate without touching the wire. When a donor
+        # lives on an upstream server, the client ships its K/V here to seed the dict; the keys we did
+        # NOT receive but produce ourselves are emitted back for downstream consumer spans.
+        shared_kv_keys = step_metadata.get("shared_kv_keys", [])
+        if shared_kv_keys:
+            seed_tensors = [t.to(requested_backends[0].dtype) for t in shared_kv_input_tensors]
+            shared_kv_states = unflatten_shared_kv(shared_kv_keys, seed_tensors)
+        else:
+            shared_kv_states = {}
+        seeded_kv_keys = set(shared_kv_states)
 
         if prefix_length + length_increment > max_length:
             raise ValueError(
@@ -223,6 +233,11 @@ async def iterate_rpc_inference(
             type="inference",
         )
 
+        # KV-sharing donor K/V this span produces for downstream consumer spans. The workers mutate
+        # `shared_kv_states` in their own process, so the produced K/V comes back through the task-pool
+        # return channel (trailing tensors after the hidden states), not the handler-side dict.
+        produced_shared_kv = {}
+
         # A client may pass a tensor with 0 tokens. This is a special case that occurs, e.g.
         # when user wants to pre-allocate cache or check that server *can* allocate that cache.
         if hidden_states.numel() > 0:
@@ -239,9 +254,14 @@ async def iterate_rpc_inference(
                     )
                     for uid, handles, per_layer_input in zip(requested_uids, cache_handles, per_layer_inputs)
                 )
-                (hidden_states,) = await requested_backends[0].inference_pool.submit_task(
+                hidden_states, *produced_tensors = await requested_backends[0].inference_pool.submit_task(
                     hidden_states, hypo_ids, inference_infos, *prompts, priority=priority
                 )
+                # The merged step returns produced donor K/V in sorted layer-type order across the span.
+                span_donor_types = sorted(
+                    {lt for backend in requested_backends for lt in backend.donor_layer_types} - seeded_kv_keys
+                )
+                produced_shared_kv = unflatten_shared_kv(span_donor_types, list(produced_tensors))
             else:
                 for backend, uid, handles, prompt, per_layer_input in zip(
                     requested_backends, requested_uids, cache_handles, prompts, per_layer_inputs
@@ -256,17 +276,32 @@ async def iterate_rpc_inference(
                             shared_kv_states=shared_kv_states,
                         ),
                     )
-                    (hidden_states,) = await backend.inference_pool.submit_task(
+                    hidden_states, *produced_tensors = await backend.inference_pool.submit_task(
                         hidden_states, hypo_ids, inference_infos, prompt, priority=priority
                     )
+                    backend_donor_types = [lt for lt in backend.donor_layer_types if lt not in seeded_kv_keys]
+                    produced_shared_kv.update(unflatten_shared_kv(backend_donor_types, list(produced_tensors)))
 
         # serialize and send last layer outputs
         output_tensors = [
             serialize_torch_tensor(result.to(proto.dtype), proto.compression, allow_inplace=True)
             for result, proto in zip((hidden_states,), nested_flatten(requested_backends[-1].outputs_schema))
         ]
-        can_push = not has_prompts and not has_per_layer_inputs
-        yield output_tensors, can_push, step_metadata
+
+        # Append the donor K/V this span produced (keys it did not receive from upstream) so the client
+        # can carry them to downstream consumer spans. One donor per layer type exists in the whole
+        # model, so a pass-through span produces nothing and adds no wire traffic.
+        response_metadata = {}
+        if produced_shared_kv:
+            produced_keys, produced_kv_tensors = flatten_shared_kv(produced_shared_kv)
+            output_tensors.extend(
+                serialize_torch_tensor(t, runtime_pb2.CompressionType.NONE, allow_inplace=False)
+                for t in produced_kv_tensors
+            )
+            response_metadata["shared_kv_keys"] = produced_keys
+
+        can_push = not has_prompts and not has_per_layer_inputs and not seeded_kv_keys and not produced_shared_kv
+        yield output_tensors, can_push, step_metadata, response_metadata
 
         # prepare for next step
         prefix_length += length_increment

@@ -4,7 +4,7 @@ import asyncio
 import itertools
 import time
 import uuid
-from typing import AsyncIterator, List, Optional, Tuple
+from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 import torch
 from hivemind.compression import deserialize_torch_tensor, serialize_torch_tensor
@@ -22,6 +22,7 @@ from drift.data_structures import CHAIN_DELIMITER, ModuleUID, RemoteSpanInfo, RP
 from drift.server.handler import TransformerConnectionHandler
 from drift.utils.misc import DUMMY, DUMMY_INT64, is_dummy
 from drift.utils.packaging import pack_args_kwargs
+from drift.utils.shared_kv import flatten_shared_kv, unflatten_shared_kv
 
 logger = get_logger(__name__)
 
@@ -105,13 +106,17 @@ class _ServerInferenceSession:
         *,
         step_id: str,
         per_layer_inputs: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        shared_kv_states: Optional[Dict[str, Tuple[torch.Tensor, torch.Tensor]]] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, Tuple[torch.Tensor, torch.Tensor]]]:
         """
         Inference step: send a chunk of input tensors and receive a chunk of outputs
         :prompts: optional DEEP prompts, added to a prefix of each layer's outputs,
           if specified, deep prompts should have shape [num_layers, batch_size, prefix_len, hid_size]
         :per_layer_inputs: optional Gemma 4 Per-Layer Embeddings for this span's blocks, sliced from
           the client's [num_layers, batch_size, seq_len, per_layer_dim] tensor; seq-aligned to `inputs`
+        :shared_kv_states: optional Gemma 4 KV-sharing donor keys/values produced by upstream spans,
+          fed to this span so its consumer layers can attend against a donor hosted on another server
+        :returns: (this span's output hidden states, the donor keys/values this span newly produced)
         """
         if self.closed:
             raise Exception("Session is closed, cannot perform step")
@@ -132,13 +137,24 @@ class _ServerInferenceSession:
             inputs = inputs[:, -n_input_tokens:]  # No need to pass prefix further
 
         # serialize inputs and put them into the queue. Gemma 4 appends the per-layer inputs as a
-        # fourth tensor; other models keep the original 3-tensor layout for wire compatibility.
-        if per_layer_inputs is None or is_dummy(per_layer_inputs):
-            input_tensors, args_structure = pack_args_kwargs(inputs, prompts, hypo_ids)
-        else:
-            input_tensors, args_structure = pack_args_kwargs(inputs, prompts, hypo_ids, per_layer_inputs)
+        # fourth tensor and, when a KV-sharing donor lives upstream, its keys/values as further
+        # tensors; other models keep the original 3-tensor layout for wire compatibility.
+        has_per_layer_inputs = per_layer_inputs is not None and not is_dummy(per_layer_inputs)
+        has_shared_kv = bool(shared_kv_states)
+        extra_tensors = []
+        if has_per_layer_inputs:
+            extra_tensors.append(per_layer_inputs)
+        elif has_shared_kv:
+            extra_tensors.append(DUMMY)  # keep per-layer-inputs in slot 4 so shared KV starts at slot 5
+        shared_kv_keys: List[str] = []
+        if has_shared_kv:
+            shared_kv_keys, shared_kv_tensors = flatten_shared_kv(shared_kv_states)
+            extra_tensors.extend(shared_kv_tensors)
+        input_tensors, args_structure = pack_args_kwargs(inputs, prompts, hypo_ids, *extra_tensors)
 
         request_metadata = dict(session_id=self.session_id, step_id=step_id)
+        if has_shared_kv:
+            request_metadata["shared_kv_keys"] = shared_kv_keys
         if not self.stepped:
             request_metadata.update(self.session_metadata)
         if self._position is not None:
@@ -177,9 +193,15 @@ class _ServerInferenceSession:
             outputs[0].shape == inputs.shape
         ), f"output activation shape is different from input shape: {outputs[0].shape} != {inputs.shape}"
 
+        # Trailing tensors (if any) are the KV-sharing donor keys/values this span produced; the
+        # response metadata names the layer types, in the same flattened order.
+        response_metadata = MSGPackSerializer.loads(outputs_serialized.metadata) if outputs_serialized.metadata else {}
+        produced_keys = response_metadata.get("shared_kv_keys", [])
+        produced_shared_kv = unflatten_shared_kv(produced_keys, outputs[1 : 1 + 2 * len(produced_keys)])
+
         self._position += n_input_tokens
 
-        return outputs[0]
+        return outputs[0], produced_shared_kv
 
     def _collect_next_servers(self) -> List[Tuple[str, str, int, int]]:
         next_servers = []
@@ -341,6 +363,11 @@ class InferenceSession:
                 f"Maximum length exceeded: prefix {self._position} + current {n_input_tokens} exceeds pre-allocated maximum {self._max_length}"
             )
 
+        # Gemma 4 KV sharing: donor keys/values produced by one span feed the consumer layers of
+        # downstream spans. Accumulate them across spans within this step; each span emits only the
+        # donors it newly produced (one donor per layer type in the whole model, so no re-emission).
+        accumulated_shared_kv: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+
         server_idx = 0
         block_idx = 0
         while block_idx < self.num_blocks:
@@ -358,13 +385,15 @@ class InferenceSession:
                         if is_dummy(per_layer_inputs)
                         else per_layer_inputs[server_session.span.start : server_session.span.end]
                     )
-                    inputs = server_session.step(
+                    inputs, produced_shared_kv = server_session.step(
                         inputs,
                         prompts[server_session.span.start : server_session.span.end],
                         hypo_ids,
                         step_id=step_id,
                         per_layer_inputs=span_per_layer_inputs,
+                        shared_kv_states=accumulated_shared_kv,
                     )
+                    accumulated_shared_kv.update(produced_shared_kv)
 
                     server_idx += 1
                     block_idx = server_session.span.end
