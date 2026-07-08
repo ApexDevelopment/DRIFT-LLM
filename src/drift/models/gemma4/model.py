@@ -10,6 +10,7 @@ from transformers.models.gemma4.modeling_gemma4 import (
     Gemma4PreTrainedModel,
     Gemma4RMSNorm,
     Gemma4TextModel,
+    Gemma4TextModelOutputWithPast,
     Gemma4TextScaledWordEmbedding,
 )
 
@@ -75,6 +76,8 @@ class DistributedGemma4Model(FromPretrainedMixin, PTuneMixin, Gemma4TextModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        per_layer_inputs: Optional[torch.Tensor] = None,
+        **kwargs,
     ) -> BaseModelOutputWithPast:
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
@@ -106,11 +109,16 @@ class DistributedGemma4Model(FromPretrainedMixin, PTuneMixin, Gemma4TextModel):
         # Per-Layer Embeddings: the token-identity + context-aware signal fed into every remote block.
         # Computed here (the client owns the embedding tables) and sliced per block server-side. Shape
         # is [num_layers, batch, seq, per_layer_dim] to mirror the deep-prompt span-slicing convention.
-        per_layer_inputs = None
         if self.hidden_size_per_layer_input:
-            per_layer_inputs = self.get_per_layer_inputs(input_ids, inputs_embeds)
+            # `per_layer_inputs` may arrive pre-computed (the token-identity component) from the causal
+            # LM wrapper; otherwise derive it from input_ids. Then add the context-aware projection and
+            # lay it out as [num_layers, batch, seq, per_layer_dim] to slice per span like deep prompts.
+            if per_layer_inputs is None:
+                per_layer_inputs = self.get_per_layer_inputs(input_ids, inputs_embeds)
             per_layer_inputs = self.project_per_layer_inputs(inputs_embeds, per_layer_inputs)
             per_layer_inputs = per_layer_inputs.permute(2, 0, 1, 3).contiguous()
+        else:
+            per_layer_inputs = None
 
         use_prompts = self.config.tuning_mode and "ptune" in self.config.tuning_mode and self.layers.position == 0
         assert not (
@@ -145,11 +153,15 @@ class DistributedGemma4Model(FromPretrainedMixin, PTuneMixin, Gemma4TextModel):
         hidden_states = self.norm(hidden_states)
         hidden_states = hidden_states.view(output_shape)
 
-        return BaseModelOutputWithPast(
+        # The stock Gemma4ForCausalLM wrapper reads `outputs.shared_kv_states`, so return the
+        # Gemma-4 output type. KV sharing is resolved server-side within each span, so the client
+        # never propagates donor K/V itself -- `shared_kv_states=None` is correct here.
+        return Gemma4TextModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
             hidden_states=None,
             attentions=None,
+            shared_kv_states=None,
         )
 
     @property
