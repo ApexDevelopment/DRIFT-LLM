@@ -9,7 +9,7 @@ No swarm / network / download required.
 import pytest
 import torch
 
-from drift.utils.misc import default_attn_implementation
+from drift.utils.misc import default_attn_implementation, mps_gqa_eager_attention, should_use_eager_attention_on_mps
 
 
 def test_default_attn_implementation_per_arch():
@@ -30,6 +30,18 @@ def test_default_attn_implementation_per_arch():
     assert default_attn_implementation(FalconConfig(alibi=True)) == "eager"
     assert default_attn_implementation(FalconConfig(alibi=False, new_decoder_architecture=True)) == "sdpa"
     assert default_attn_implementation(Gemma2Config()) == "eager"  # attn_logit_softcapping
+
+
+def test_mps_gqa_uses_eager_attention_context():
+    from transformers.models.qwen2 import Qwen2Config
+
+    config = Qwen2Config(num_attention_heads=14, num_key_value_heads=2)
+    config._attn_implementation = "sdpa"
+
+    assert should_use_eager_attention_on_mps(config, torch.device("mps"))
+    with mps_gqa_eager_attention(config, torch.device("mps")):
+        assert config._attn_implementation == "eager"
+    assert config._attn_implementation == "sdpa"
 
 
 def _make(arch):

@@ -20,7 +20,7 @@ from transformers.cache_utils import DynamicCache
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 
 from drift.models._gqa_block import BloomLayoutCacheMixin
-from drift.utils.misc import default_attn_implementation, is_dummy
+from drift.utils.misc import default_attn_implementation, is_dummy, mps_gqa_eager_attention
 
 
 class WrappedGemmaBlock(BloomLayoutCacheMixin):
@@ -73,14 +73,15 @@ class WrappedGemmaBlock(BloomLayoutCacheMixin):
         mask_fn = create_sliding_window_causal_mask if self.layer_type == "sliding_attention" else create_causal_mask
         causal_mask = mask_fn(self.config, hidden_states, attention_mask, past_key_values, position_ids)
 
-        output = super().forward(
-            hidden_states,
-            position_embeddings=position_embeddings,
-            attention_mask=causal_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            cache_position=cache_position,
-        )
+        with mps_gqa_eager_attention(self.config, hidden_states.device):
+            output = super().forward(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=causal_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                cache_position=cache_position,
+            )
         hidden_states = output[0] if isinstance(output, tuple) else output
 
         if use_cache:

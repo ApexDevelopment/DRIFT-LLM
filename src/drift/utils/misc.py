@@ -1,3 +1,5 @@
+import contextlib
+
 import torch
 
 DUMMY = torch.empty(0)  # dummy tensor that replaces empty prompt or adapter parameters
@@ -66,6 +68,35 @@ def default_attn_implementation(config) -> str:
     if uses_alibi or getattr(config, "attn_logit_softcapping", None):
         return "eager"
     return "sdpa"
+
+
+def get_num_key_value_groups(config) -> int:
+    groups = getattr(config, "num_key_value_groups", None)
+    if groups is not None:
+        return groups
+
+    num_heads = getattr(config, "num_attention_heads", 1)
+    num_key_value_heads = getattr(config, "num_key_value_heads", num_heads)
+    return num_heads // num_key_value_heads
+
+
+def should_use_eager_attention_on_mps(config, device: torch.device) -> bool:
+    return (
+        device.type == "mps"
+        and getattr(config, "_attn_implementation", None) == "sdpa"
+        and get_num_key_value_groups(config) > 1
+    )
+
+
+@contextlib.contextmanager
+def mps_gqa_eager_attention(config, device: torch.device):
+    previous = getattr(config, "_attn_implementation", None)
+    if should_use_eager_attention_on_mps(config, device):
+        config._attn_implementation = "eager"
+    try:
+        yield
+    finally:
+        config._attn_implementation = previous
 
 
 def docstring_from(source):
