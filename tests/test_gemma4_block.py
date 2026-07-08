@@ -112,6 +112,46 @@ def test_gemma4_block_stack_matches_hf():
     assert set(shared_kv_states) == {"sliding_attention", "full_attention"}
 
 
+def _clone_across_wire(shared_kv_states):
+    """Mimic serialization of shared K/V between two servers (spans)."""
+    return {t: (k.clone(), v.clone()) for t, (k, v) in shared_kv_states.items()}
+
+
+def test_gemma4_pipeline_across_spans():
+    """Full stack split into spans, threading hidden + per-layer-inputs + donor K/V across span
+    boundaries -- with each donor and its consumer deliberately in *different* spans."""
+    cfg = _tiny_config()
+    input_ids = torch.randint(0, cfg.vocab_size, (1, 6))
+    model, _, _, per_layer_inputs = _model_and_per_layer_inputs(cfg, input_ids)
+    with torch.inference_mode():
+        reference = model(input_ids, use_cache=False).last_hidden_state
+        inputs_embeds = model.embed_tokens(input_ids)
+
+    blocks = []
+    for i in range(cfg.num_hidden_layers):
+        block = WrappedGemma4Block(cfg, layer_idx=i).eval()
+        block.load_state_dict(model.layers[i].state_dict(), strict=False)
+        blocks.append(block)
+
+    # donors are at layers 2 (full) and 3 (sliding); consumers at 4 (sliding) and 5 (full).
+    # These spans put every donor in a strictly earlier span than its consumer.
+    spans = [(0, 2), (2, 4), (4, 6)]
+    hidden = inputs_embeds
+    shared_kv_states = {}
+    with torch.inference_mode():
+        for start, end in spans:
+            shared_kv_states = _clone_across_wire(shared_kv_states)  # crosses the "wire"
+            for i in range(start, end):
+                (hidden,) = blocks[i](
+                    hidden,
+                    per_layer_input=per_layer_inputs[:, :, i, :],
+                    shared_kv_states=shared_kv_states,
+                )
+        hidden = model.norm(hidden)
+
+    assert torch.allclose(hidden, reference, atol=ATOL), (hidden - reference).abs().max()
+
+
 def test_gemma4_nonshared_block_cache_roundtrip():
     cfg = _tiny_config()
     input_ids = torch.randint(0, cfg.vocab_size, (1, 5))
