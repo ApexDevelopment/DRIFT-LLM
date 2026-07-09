@@ -10,7 +10,7 @@ if platform.system() == "Darwin":
 
 import hivemind
 import transformers
-from packaging import version
+from packaging.version import parse as _parse_version
 
 from drift.client import *
 from drift.models import *
@@ -22,7 +22,7 @@ __version__ = "2.3.0.dev2"
 
 if not os.getenv("DRIFT_IGNORE_DEPENDENCY_VERSION"):
     assert (
-        version.parse("5.13.0") <= version.parse(transformers.__version__) < version.parse("6.0.0")
+        _parse_version("5.13.0") <= _parse_version(transformers.__version__) < _parse_version("6.0.0")
     ), "Please install a proper transformers version: pip install transformers>=5.13,<6.0"
 
 

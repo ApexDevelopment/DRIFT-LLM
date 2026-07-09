@@ -544,7 +544,5 @@ class MissingBlocksError(RuntimeError):
     def __init__(self, block_indices: Union[int, Sequence[int]]):
         super().__init__(
             f"No servers holding blocks {block_indices} are online. "
-            f"You can check the public swarm's state at https://health.drift.dev "
-            f"If there are not enough servers, please connect your GPU: "
-            f"https://github.com/ApexDevelopment/DRIFT-LLM#connect-your-gpu-and-increase-drift-capacity "
+            f"Make sure your swarm's servers are running and together cover all model blocks."
         )

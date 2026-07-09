@@ -22,7 +22,7 @@ from hivemind.utils.timed_storage import MAX_DHT_TIME_DISCREPANCY_SECONDS, get_d
 from transformers import PretrainedConfig
 
 import drift
-from drift.constants import DTYPE_MAP, PUBLIC_INITIAL_PEERS
+from drift.constants import DTYPE_MAP
 from drift.data_structures import CHAIN_DELIMITER, UID_DELIMITER, ModelInfo, ServerInfo, ServerState, parse_uid
 from drift.server import block_selection
 from drift.server.backend import TransformerBackend, merge_inference_pools_inplace
@@ -30,7 +30,7 @@ from drift.server.block_utils import get_block_size, resolve_block_dtype
 from drift.server.from_pretrained import load_pretrained_block
 from drift.server.handler import TransformerConnectionHandler
 from drift.server.memory_cache import MemoryCache
-from drift.server.reachability import ReachabilityProtocol, check_direct_reachability, validate_reachability
+from drift.server.reachability import ReachabilityProtocol, check_direct_reachability
 from drift.server.throughput import get_dtype_name, get_server_throughput
 from drift.utils.auto_config import AutoDistributedConfig
 from drift.utils.convert_block import QuantType, check_device_balance, convert_block
@@ -117,7 +117,6 @@ class Server:
         token: Optional[Union[str, bool]] = None,
         quant_type: Optional[QuantType] = None,
         tensor_parallel_devices: Optional[Sequence[torch.device]] = None,
-        skip_reachability_check: bool = False,
         reachable_via_relay: Optional[bool] = None,
         use_relay: bool = True,
         use_auto_relay: bool = True,
@@ -140,7 +139,7 @@ class Server:
 
         self.block_config = AutoDistributedConfig.from_pretrained(
             converted_model_name_or_path,
-            use_auth_token=token,
+            token=token,
             revision=revision,
         )
 
@@ -185,12 +184,11 @@ class Server:
         self.reachability_protocol = ReachabilityProtocol.attach_to_dht(self.dht) if not reachable_via_relay else None
 
         visible_maddrs_str = [str(a) for a in self.dht.get_visible_maddrs()]
-        if initial_peers == PUBLIC_INITIAL_PEERS:
-            logger.info("Connecting to the public swarm")
+        if initial_peers:
+            logger.info(f"Connecting to a swarm, initial peers: {initial_peers}")
         else:
-            logger.info(f"Connecting to a private swarm, initial peers: {initial_peers}")
+            logger.info("Starting a new swarm")
         logger.info(f"Running a server on {visible_maddrs_str}")
-        self.should_validate_reachability = not skip_reachability_check and initial_peers == PUBLIC_INITIAL_PEERS
 
         if device is None:
             device = auto_detect_device()
@@ -437,7 +435,6 @@ class Server:
                 token=self.token,
                 quant_type=self.quant_type,
                 tensor_parallel_devices=self.tensor_parallel_devices,
-                should_validate_reachability=self.should_validate_reachability,
                 start=True,
             )
             try:
@@ -537,7 +534,6 @@ class ModuleContainer(threading.Thread):
         token: Optional[Union[str, bool]],
         quant_type: QuantType,
         tensor_parallel_devices: Sequence[torch.device],
-        should_validate_reachability: bool,
         **kwargs,
     ) -> ModuleContainer:
         module_uids = [f"{dht_prefix}{UID_DELIMITER}{block_index}" for block_index in block_indices]
@@ -609,9 +605,6 @@ class ModuleContainer(threading.Thread):
                 )
 
             merge_inference_pools_inplace(blocks)
-
-            if should_validate_reachability:
-                validate_reachability(dht.peer_id)
         except:
             logger.debug("Shutting down backends")
             for backend in blocks.values():

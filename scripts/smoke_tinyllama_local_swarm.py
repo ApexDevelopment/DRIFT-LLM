@@ -145,7 +145,6 @@ def main() -> None:
             token=None,
             quant_type=QuantType.NONE,
             tensor_parallel_devices=(device,),
-            should_validate_reachability=False,
             start=True,
         )
         assert container.ready.wait(timeout=30), "module container did not become ready"

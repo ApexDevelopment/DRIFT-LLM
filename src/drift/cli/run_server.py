@@ -8,10 +8,10 @@ from hivemind.utils import limits
 from hivemind.utils.logging import get_logger
 from humanfriendly import parse_size
 
-from drift.constants import DTYPE_MAP, PUBLIC_INITIAL_PEERS
+from drift.constants import DTYPE_MAP
 from drift.server.server import Server
 from drift.utils.convert_block import QuantType
-from drift.utils.version import validate_version
+from drift.utils.version import log_version
 
 logger = get_logger(__name__)
 
@@ -139,8 +139,9 @@ def build_parser() -> configargparse.ArgParser:
                         help="Timeout (in seconds) for waiting the next step's inputs inside an inference session")
 
     group = parser.add_mutually_exclusive_group()
-    group.add_argument('--initial_peers', type=str, nargs='+', required=False, default=PUBLIC_INITIAL_PEERS,
-                       help='Multiaddrs of one or more DHT peers from the target swarm. Default: connects to the public swarm')
+    group.add_argument('--initial_peers', type=str, nargs='+', required=False, default=None,
+                       help='Multiaddrs of one or more DHT peers from the swarm to join. '
+                            'Required unless --new_swarm is set')
     group.add_argument('--new_swarm', action='store_true',
                        help='Start a new private swarm (i.e., do not connect to any initial peers)')
 
@@ -169,11 +170,6 @@ def build_parser() -> configargparse.ArgParser:
                         help=
                         "Split each block between the specified GPUs such that each device holds a portion of every "
                         "weight matrix. See https://huggingface.co/transformers/v4.9.0/parallelism.html#tensor-parallelism")
-
-    parser.add_argument("--skip_reachability_check", action='store_true',
-                        help="Skip checking this server's reachability via health.drift.dev "
-                             "when connecting to the public swarm. If you connect to a private swarm, "
-                             "the check is skipped by default. Use this option only if you know what you are doing")
 
     parser.add_argument("--adapters", nargs='*', default=(),
                         help="List of pre-loaded LoRA adapters that can be used for inference or training")
@@ -225,12 +221,17 @@ def server_from_args(args: dict) -> Server:
 
     if args.pop("new_swarm"):
         args["initial_peers"] = []
+    elif not args.get("initial_peers"):
+        raise ValueError(
+            "DRIFT-LLM serves private swarms: pass --initial_peers <multiaddr> to join an existing swarm, "
+            "or --new_swarm to start a new one (or use `drift up`, which starts one by default)"
+        )
 
     quant_type = args.pop("quant_type")
     if quant_type is not None:
         args["quant_type"] = QuantType[quant_type.upper()]
 
-    validate_version()
+    log_version()
 
     if not torch.backends.openmp.is_available():
         # Necessary to prevent the server from freezing after forks

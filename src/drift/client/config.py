@@ -4,15 +4,13 @@ from typing import Optional, Sequence, Union
 
 from hivemind.p2p import PeerID
 
-from drift.constants import PUBLIC_INITIAL_PEERS
-
 _max_retries = os.getenv("DRIFT_MAX_RETRIES")
 DEFAULT_MAX_RETRIES = int(_max_retries) if isinstance(_max_retries, str) else None
 
 
 @dataclasses.dataclass
 class ClientConfig:
-    initial_peers: Sequence[str] = tuple(PUBLIC_INITIAL_PEERS)  # a list of initial peers for hivemind DHT
+    initial_peers: Sequence[str] = ()  # multiaddrs of DHT peers from the swarm to join
     dht_prefix: Optional[str] = None  # a prefix for all dht keys that correspond to this model (default: model name)
     daemon_startup_timeout: int = 60  # timeout for the libp2p daemon connecting to initial peers
 

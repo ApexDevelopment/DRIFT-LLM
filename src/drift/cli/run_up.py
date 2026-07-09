@@ -11,7 +11,7 @@ join command. Every other machine runs that command to add its compute::
 
 It is a thin front-end over ``drift server`` (drift.cli.run_server): every server
 flag still works, and ``--join`` simply fills in ``--initial_peers`` for you while
-defaulting to a fresh private swarm instead of the public network.
+defaulting to a fresh private swarm.
 """
 
 from pathlib import Path
@@ -19,7 +19,6 @@ from pathlib import Path
 from hivemind.utils.logging import get_logger
 
 from drift.cli.run_server import build_parser, server_from_args
-from drift.constants import PUBLIC_INITIAL_PEERS
 from drift.utils.join_token import encode_join_token, parse_join, select_advertisable_maddrs
 
 logger = get_logger(__name__)
@@ -53,11 +52,11 @@ def main():
         # Explicit join target wins and puts us in the existing swarm.
         args["initial_peers"] = parse_join(join)
         args["new_swarm"] = False
-    elif args.get("new_swarm") or args.get("initial_peers") != PUBLIC_INITIAL_PEERS:
+    elif args.get("new_swarm") or args.get("initial_peers"):
         # A power user set --new_swarm or --initial_peers directly; respect their choice.
         pass
     else:
-        # The friendly default: don't phone the public network, start a fresh private swarm.
+        # The friendly default: start a fresh private swarm.
         args["new_swarm"] = True
 
     if args.get("new_swarm") and not args.get("identity_path"):

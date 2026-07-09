@@ -9,7 +9,7 @@ import torch
 from hivemind.utils.logging import get_logger
 
 from drift import AutoDistributedModelForCausalLM, AutoDistributedModelForSequenceClassification
-from drift.constants import DTYPE_MAP, PUBLIC_INITIAL_PEERS
+from drift.constants import DTYPE_MAP
 
 logger = get_logger()
 
@@ -19,7 +19,7 @@ def main():
     parser.add_argument("--model", type=str, required=True, help="Model")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device hosting the client")
     parser.add_argument("--task", type=str, default="cls", help="Training task type")
-    parser.add_argument("--initial_peers", type=str, nargs="+", default=PUBLIC_INITIAL_PEERS, help="Initial peers")
+    parser.add_argument("--initial_peers", type=str, nargs="+", required=True, help="Initial peers")
     parser.add_argument("--torch_dtype", type=str, default="float32", help="Torch dtype")
     parser.add_argument("--n_processes", type=str, default=1, help="Number of concurrent processes")
     parser.add_argument("--seq_len", type=int, default=128, help="Sequence length")
