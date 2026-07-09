@@ -1,6 +1,17 @@
+import hivemind
 import pytest
 
 from drift import AutoDistributedModelForCausalLM
+
+
+@pytest.fixture(scope="module")
+def local_dht_peers():
+    """A loopback bootstrap DHT, since clients no longer have default initial_peers to fall back on."""
+    dht = hivemind.DHT(start=True, host_maddrs=["/ip4/127.0.0.1/tcp/0"])
+    try:
+        yield [str(maddr) for maddr in dht.get_visible_maddrs()]
+    finally:
+        dht.shutdown()
 
 
 def _save_tiny_model(tmp_path, config_cls, model_cls):
@@ -23,7 +34,7 @@ def _save_tiny_model(tmp_path, config_cls, model_cls):
         ("transformers.models.qwen3.Qwen3Config", "transformers.models.qwen3.Qwen3ForCausalLM"),
     ],
 )
-def test_tied_embeddings_load_with_ignored_remote_blocks(tmp_path, config_path, model_path):
+def test_tied_embeddings_load_with_ignored_remote_blocks(tmp_path, config_path, model_path, local_dht_peers):
     config_module, config_name = config_path.rsplit(".", 1)
     model_module, model_name = model_path.rsplit(".", 1)
 
@@ -36,6 +47,7 @@ def test_tied_embeddings_load_with_ignored_remote_blocks(tmp_path, config_path, 
         tmp_path,
         dht_prefix="test",
         low_cpu_mem_usage=True,
+        initial_peers=local_dht_peers,
     )
 
     assert model.lm_head.weight is model.model.embed_tokens.weight
