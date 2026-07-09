@@ -20,7 +20,9 @@ from drift.utils.tensor_parallel import TensorParallel
 logger = get_logger(__name__)
 
 
-def _extract_produced_shared_kv(shared_kv_states: Optional[Dict[str, Any]], seeded_keys: set) -> Tuple[torch.Tensor, ...]:
+def _extract_produced_shared_kv(
+    shared_kv_states: Optional[Dict[str, Any]], seeded_keys: set
+) -> Tuple[torch.Tensor, ...]:
     """Flatten the donor K/V a block newly wrote into ``shared_kv_states`` (keys absent from ``seeded_keys``).
 
     Returns ``(k0, v0, k1, v1, ...)`` in sorted layer-type order so the caller can pair the tensors back
@@ -178,6 +180,18 @@ class TransformerBackend(ModuleBackend):
 
             shared_kv_states = inference_info.shared_kv_states
             seeded_kv_keys = set(shared_kv_states) if shared_kv_states else set()
+            # The task pool moves only the positional hidden_states onto the runtime device; the Gemma 4
+            # side channels (per_layer_input, shared_kv_states) travel inside InferenceMetadata and arrive
+            # on CPU. Move them here so a GPU-hosted block doesn't mix devices. shared_kv_states is moved
+            # in place because a merged span shares one dict across its blocks by reference.
+            device = hidden_states.device
+            per_layer_input = inference_info.per_layer_input
+            if per_layer_input is not None and per_layer_input.device != device:
+                per_layer_input = per_layer_input.to(device)
+            if shared_kv_states:
+                for layer_type, (key, value) in shared_kv_states.items():
+                    if key.device != device or value.device != device:
+                        shared_kv_states[layer_type] = (key.to(device), value.to(device))
             with self.memory_cache.use_cache(*inference_info.cache_handles) as cache_tensors:
                 self._reorder_cache_inplace(cache_tensors, hypo_ids)
                 max_chunk_length = self._estimate_max_chunk_length(hidden_states, inference_info)
@@ -188,7 +202,7 @@ class TransformerBackend(ModuleBackend):
                     hidden_states,
                     layer_past,
                     max_chunk_length,
-                    per_layer_input=inference_info.per_layer_input,
+                    per_layer_input=per_layer_input,
                     shared_kv_states=shared_kv_states,
                 )
                 # KV-sharing consumer blocks (Gemma 4) keep no cache of their own, so new_kvs is None.
@@ -317,5 +331,7 @@ class _MergedInferenceStep:
                 hidden_states[:, : optional_prompt.shape[1]] += optional_prompt
             # inference_step also returns each block's produced donor K/V (for the non-merged path);
             # here the shared dict already collects them, so keep only the hidden states.
-            hidden_states, *_ = self.backends[inference_info.uid].inference_step(hidden_states, hypo_ids, inference_info)
+            hidden_states, *_ = self.backends[inference_info.uid].inference_step(
+                hidden_states, hypo_ids, inference_info
+            )
         return (hidden_states, *_extract_produced_shared_kv(shared_kv_states, seeded_kv_keys))
