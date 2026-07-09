@@ -127,7 +127,7 @@ Requires **Python 3.10+**. The project is managed with [uv](https://docs.astral.
 
 ```bash
 git clone https://github.com/ApexDevelopment/DRIFT-LLM
-cd drift
+cd DRIFT-LLM
 uv sync --extra dev
 ```
 
