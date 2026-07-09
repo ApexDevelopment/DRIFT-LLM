@@ -17,7 +17,9 @@ from typing import Dict, List, Tuple
 import torch
 
 
-def flatten_shared_kv(shared_kv_states: Dict[str, Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[List[str], List[torch.Tensor]]:
+def flatten_shared_kv(
+    shared_kv_states: Dict[str, Tuple[torch.Tensor, torch.Tensor]]
+) -> Tuple[List[str], List[torch.Tensor]]:
     """Split a ``shared_kv_states`` dict into an ordered ``(layer_types, [k0, v0, k1, v1, ...])`` pair."""
     keys: List[str] = []
     tensors: List[torch.Tensor] = []

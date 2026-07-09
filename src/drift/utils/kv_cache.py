@@ -101,8 +101,7 @@ class StandardGQACache(KVCacheStrategy):
         # differs from hidden_size // num_attention_heads); then the standard derivation.
         if head_dim is None:
             head_dim = (
-                getattr(self.config, "head_dim", None)
-                or self.config.hidden_size // self.config.num_attention_heads
+                getattr(self.config, "head_dim", None) or self.config.hidden_size // self.config.num_attention_heads
             )
         cache_tensors = []
         for device, num_heads in zip(devices, shard_num_heads):
