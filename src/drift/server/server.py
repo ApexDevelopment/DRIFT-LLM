@@ -51,6 +51,25 @@ from drift.utils.version import get_compatible_model_repo
 logger = get_logger(__name__)
 
 
+def _probe_quantization(quant_type: QuantType, device: torch.device) -> Optional[str]:
+    """Return None if ``quant_type`` can actually run on ``device``, else a short reason why not.
+
+    bitsandbytes imports cleanly but ships without a working native library on some platforms (e.g.
+    ROCm on Windows); otherwise the failure only surfaces deep inside block loading, after the 5 GB of
+    weights are already downloaded. A tiny quantization exercises the shared native library that both
+    the nf4 and int8 paths depend on, so we can catch the problem before loading anything.
+    """
+    if quant_type == QuantType.NONE:
+        return None
+    try:
+        import bitsandbytes as bnb
+
+        bnb.functional.quantize_4bit(torch.zeros(64, 64, dtype=torch.bfloat16, device=device))
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
 class Server:
     """
     Runs ModuleContainer, periodically checks that the network is balanced,
@@ -195,8 +214,23 @@ class Server:
             logger.info(f"Model weights will be split between {', '.join(tensor_parallel_devices)}")
             check_device_balance(self.tensor_parallel_devices)
 
+        explicitly_requested_quant = quant_type is not None
         if quant_type is None:
             quant_type = QuantType.NF4 if device.type == "cuda" else QuantType.NONE
+        # Fail fast (or fall back) if the chosen quantization can't run here, rather than crashing deep
+        # inside block loading after the weights are downloaded (ROCm/Windows ships a broken bitsandbytes).
+        quant_error = _probe_quantization(quant_type, device)
+        if quant_error is not None:
+            if explicitly_requested_quant:
+                raise RuntimeError(
+                    f"--quant_type {quant_type.name.lower()} was requested but cannot run on this device "
+                    f"({quant_error}). Install a working bitsandbytes build or serve with --quant_type none."
+                )
+            logger.warning(
+                f"Default {quant_type.name.lower()} quantization is unavailable on this device ({quant_error}); "
+                f"falling back to uncompressed weights (--quant_type none)."
+            )
+            quant_type = QuantType.NONE
         self.quant_type = quant_type
         logger.info(f"Model weights are loaded in {get_dtype_name(torch_dtype, quant_type)} format")
 
@@ -274,6 +308,8 @@ class Server:
             using_relay=reachable_via_relay,
             **throughput_info,
         )
+        self._warn_on_swarm_profile_mismatch()
+
         self.model_info = ModelInfo(num_blocks=self.block_config.num_hidden_layers)
         if not os.path.isdir(converted_model_name_or_path):
             self.model_info.repository = "https://huggingface.co/" + converted_model_name_or_path
@@ -284,6 +320,36 @@ class Server:
 
         self.module_container = None
         self.stop = threading.Event()
+
+    def _warn_on_swarm_profile_mismatch(self) -> None:
+        """Best-effort: warn if peers already serving this model use a different dtype/quant.
+
+        torch_dtype and weight quantization are per-server serving choices already advertised in each
+        ServerInfo. A swarm that mixes them still runs, but stitches together numerically inconsistent
+        blocks, so results depend on which servers a route lands on. This only warns -- it never blocks
+        joining, since heterogeneous swarms remain allowed.
+        """
+        ours = (self.server_info.torch_dtype, self.server_info.quant_type)
+        try:
+            module_infos = get_remote_module_infos(self.dht, self.module_uids, latest=True)
+            others = set()
+            for module_info in module_infos:
+                for peer_id, server_info in module_info.servers.items():
+                    if peer_id == self.dht.peer_id or server_info.quant_type is None:
+                        continue  # skip ourselves and older servers that don't advertise a quant_type
+                    others.add((server_info.torch_dtype, server_info.quant_type))
+        except Exception as e:
+            logger.debug(f"Skipping swarm dtype/quant consistency check: {e}")
+            return
+
+        mismatches = sorted(f"{dtype}/{quant}" for dtype, quant in others if (dtype, quant) != ours)
+        if mismatches:
+            logger.warning(
+                f"This server serves {ours[0]}/{ours[1]} (dtype/quant), but the swarm already has servers "
+                f"running {', '.join(mismatches)}. Mixing precision or quantization across a swarm yields "
+                f"inconsistent results depending on the route; consider matching --torch_dtype and "
+                f"--quant_type across all servers."
+            )
 
     def _choose_num_blocks(self) -> int:
         assert is_accelerator(self.device), (
