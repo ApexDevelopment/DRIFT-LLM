@@ -5,8 +5,6 @@ from typing import Optional, Type, Union
 from hivemind.utils.logging import get_logger
 from transformers import AutoConfig, PretrainedConfig, PreTrainedModel
 
-from drift.utils.hf_auth import always_needs_auth
-
 logger = get_logger(__name__)
 
 
@@ -34,13 +32,6 @@ class _AutoDistributedBase:
 
     @classmethod
     def from_pretrained(cls, model_name_or_path: Union[str, os.PathLike, None], *args, **kwargs) -> PretrainedConfig:
-        if (
-            always_needs_auth(model_name_or_path)
-            and kwargs.get("token") is None
-            and kwargs.get("use_auth_token") is None
-        ):
-            kwargs["use_auth_token"] = True
-
         config = AutoConfig.from_pretrained(model_name_or_path, *args, **kwargs)
         model_type = config.model_type
         if model_type not in _CLASS_MAPPING:

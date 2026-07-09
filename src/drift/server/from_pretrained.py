@@ -31,7 +31,6 @@ from drift.utils.disk_cache import (
     free_disk_space_for,
     get_file_from_repo,
 )
-from drift.utils.hf_auth import always_needs_auth
 from drift.utils.weight_conversion import maybe_convert_block_state_dict
 
 logger = get_logger(__name__)
@@ -49,7 +48,7 @@ def load_pretrained_block(
     max_disk_space: Optional[int] = None,
 ) -> nn.Module:
     if config is None:
-        config = AutoDistributedConfig.from_pretrained(model_name, use_auth_token=token)
+        config = AutoDistributedConfig.from_pretrained(model_name, token=token)
     if cache_dir is None:
         cache_dir = DEFAULT_CACHE_DIR
 
@@ -96,9 +95,6 @@ def _load_state_dict_from_repo(
     cache_dir: str,
     max_disk_space: Optional[int] = None,
 ) -> StateDict:
-    if always_needs_auth(model_name) and token is None:
-        token = True
-
     index_file = _find_index_file(model_name, revision=revision, token=token, cache_dir=cache_dir)
     if index_file.endswith(".index.json"):  # Sharded model
         path = get_file_from_repo(model_name, filename=index_file, use_auth_token=token, cache_dir=cache_dir)
