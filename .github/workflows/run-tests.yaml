@@ -49,6 +49,7 @@ jobs:
             tests/test_deepseek_v3.py \
             tests/test_device_portability.py \
             tests/test_gemma4_block.py \
+            tests/test_gemma4_multimodal_loading.py \
             tests/test_join_token.py \
             tests/test_kv_cache_strategy.py \
             tests/test_paged_cache.py \

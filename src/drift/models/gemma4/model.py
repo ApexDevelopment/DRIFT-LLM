@@ -19,12 +19,39 @@ from drift.client.lm_head import LMHead
 from drift.client.ptune import PTuneMixin
 from drift.client.remote_generation import RemoteGenerationMixin, RemotePastKeyValues
 from drift.client.remote_sequential import RemoteSequential
-from drift.models.gemma4.config import DistributedGemma4Config
+from drift.models.gemma4.config import DistributedGemma4Config, is_multimodal_wrapper_checkpoint
 
 logger = get_logger(__name__)
 
+# The client hosts only the text tower's embeddings/norm; these live under ``model.layers.*`` (remote
+# blocks) or the multimodal towers, none of which the client instantiates.
+_KEYS_TO_IGNORE_ON_LOAD_UNEXPECTED = [
+    r"^model\.layers\.",  # transformer blocks -- hosted by the swarm, and their multimodal-wrapper form
+    r"^model\.language_model\.layers\.",  # (matched before key_mapping strips the wrapper prefix)
+    r"^model\.vision_tower\.",  # multimodal towers we do not serve
+    r"^model\.audio_tower\.",
+    r"^model\.multi_modal_projector\.",
+    r"^multi_modal_projector\.",
+]
 
-class DistributedGemma4Model(FromPretrainedMixin, PTuneMixin, Gemma4TextModel):
+
+class _Gemma4WrapperLoadMixin:
+    """Loads the text tower out of either a text-only or a multimodal Gemma 4 checkpoint.
+
+    The released multimodal checkpoints (e.g. google/gemma-4-E2B-it) nest the whole text tower under
+    ``model.language_model.*`` next to vision/audio towers; strip that container on load so the client
+    embeddings line up, and let the ignore patterns above drop the towers we don't host.
+    """
+
+    @classmethod
+    def from_pretrained(cls, model_name_or_path, *args, **kwargs):
+        if is_multimodal_wrapper_checkpoint(model_name_or_path, **kwargs):
+            key_mapping = kwargs.setdefault("key_mapping", {})
+            key_mapping.setdefault(r"^model\.language_model\.", "model.")
+        return super().from_pretrained(model_name_or_path, *args, **kwargs)
+
+
+class DistributedGemma4Model(_Gemma4WrapperLoadMixin, FromPretrainedMixin, PTuneMixin, Gemma4TextModel):
     """Gemma4TextModel, but all transformer layers are hosted by the swarm.
 
     The client keeps the embeddings (including the Per-Layer Embedding table ``embed_tokens_per_layer``
@@ -33,7 +60,7 @@ class DistributedGemma4Model(FromPretrainedMixin, PTuneMixin, Gemma4TextModel):
     """
 
     _keys_to_ignore_on_load_missing = PTuneMixin._keys_to_ignore_on_load_missing
-    _keys_to_ignore_on_load_unexpected = [r"^model\.layers\."]
+    _keys_to_ignore_on_load_unexpected = _KEYS_TO_IGNORE_ON_LOAD_UNEXPECTED
 
     config_class = DistributedGemma4Config
 
@@ -181,7 +208,9 @@ class DistributedGemma4Model(FromPretrainedMixin, PTuneMixin, Gemma4TextModel):
         return self.norm
 
 
-class DistributedGemma4ForCausalLM(FromPretrainedMixin, RemoteGenerationMixin, Gemma4ForCausalLM):
+class DistributedGemma4ForCausalLM(
+    _Gemma4WrapperLoadMixin, FromPretrainedMixin, RemoteGenerationMixin, Gemma4ForCausalLM
+):
     _keys_to_ignore_on_load_missing = DistributedGemma4Model._keys_to_ignore_on_load_missing
     _keys_to_ignore_on_load_unexpected = DistributedGemma4Model._keys_to_ignore_on_load_unexpected
 
@@ -204,7 +233,7 @@ class DistributedGemma4ForCausalLM(FromPretrainedMixin, RemoteGenerationMixin, G
         return self.model
 
 
-class DistributedGemma4ForSequenceClassification(FromPretrainedMixin, Gemma4PreTrainedModel):
+class DistributedGemma4ForSequenceClassification(_Gemma4WrapperLoadMixin, FromPretrainedMixin, Gemma4PreTrainedModel):
     _keys_to_ignore_on_load_missing = DistributedGemma4Model._keys_to_ignore_on_load_missing
     _keys_to_ignore_on_load_unexpected = DistributedGemma4Model._keys_to_ignore_on_load_unexpected
 

@@ -42,10 +42,17 @@ class _AutoDistributedBase:
             kwargs["use_auth_token"] = True
 
         config = AutoConfig.from_pretrained(model_name_or_path, *args, **kwargs)
-        if config.model_type not in _CLASS_MAPPING:
-            raise ValueError(f"DRIFT-LLM does not support model type {config.model_type}")
+        model_type = config.model_type
+        if model_type not in _CLASS_MAPPING:
+            # Multimodal wrappers (e.g. Gemma4ForConditionalGeneration) carry the language model in a
+            # nested text_config; fall back to it so we serve the text tower of a multimodal checkpoint.
+            text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
+            if text_config is not config and text_config.model_type in _CLASS_MAPPING:
+                model_type = text_config.model_type
+            else:
+                raise ValueError(f"DRIFT-LLM does not support model type {config.model_type}")
 
-        proper_cls = getattr(_CLASS_MAPPING[config.model_type], cls._mapping_field)
+        proper_cls = getattr(_CLASS_MAPPING[model_type], cls._mapping_field)
         if proper_cls is None:
             raise ValueError(f"DRIFT-LLM does not have {cls.__name__} for model type {config.model_type}")
 
