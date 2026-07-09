@@ -24,6 +24,17 @@ ATOL = 3e-5
 _WRAPPER_KEY_MAPPING = {r"^model\.language_model\.": "model."}
 
 
+def _randomize_persistent_buffers(text_model):
+    """Give trained-in-checkpoint buffers non-init values, like the released weights have.
+
+    gemma-4-E2B-it ships layer_scalar != 1; a freshly initialized tiny model has the init value 1.0,
+    which masks loaders that skip buffers (each block's output is then off by 1/layer_scalar).
+    """
+    with torch.no_grad():
+        for layer in text_model.layers:
+            layer.layer_scalar.copy_(0.5 + torch.rand(1))
+
+
 def _tiny_text_config():
     from transformers.models.gemma4 import Gemma4TextConfig
 
@@ -62,6 +73,7 @@ def wrapper_checkpoint(tmp_path_factory):
     text_cfg = _tiny_text_config()
     torch.manual_seed(0)
     text_model = Gemma4TextModel(text_cfg).eval()
+    _randomize_persistent_buffers(text_model)
 
     path = tmp_path_factory.mktemp("gemma4_wrapper")
     # Nest the text tower under model.language_model.* and add a throwaway vision-tower tensor that
@@ -84,6 +96,7 @@ def text_only_checkpoint(tmp_path_factory):
     text_cfg = _tiny_text_config()
     torch.manual_seed(0)
     text_model = Gemma4TextModel(text_cfg).eval()
+    _randomize_persistent_buffers(text_model)
 
     path = tmp_path_factory.mktemp("gemma4_text_only")
     save_file(

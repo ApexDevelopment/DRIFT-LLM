@@ -79,6 +79,18 @@ def load_pretrained_block(
             param = param.to(torch_dtype)
         set_module_tensor_to_device(block, param_name, "cpu", value=param, dtype=param.dtype)
 
+    # Persistent buffers live in the checkpoint too (e.g. Gemma 4's trained per-layer
+    # `layer_scalar`, clipped-linear ranges); skipping them silently leaves init values.
+    # Buffers absent from the checkpoint (rotary inv_freq, embed scales) keep their
+    # computed values, so unlike parameters they are not required to be present.
+    for buffer_name, _ in block.named_buffers():
+        if buffer_name not in state_dict:
+            continue
+        buffer = state_dict[buffer_name]
+        if not str(buffer.dtype).startswith(("torch.uint", "torch.int", "torch.bool")):
+            buffer = buffer.to(torch_dtype)
+        set_module_tensor_to_device(block, buffer_name, "cpu", value=buffer, dtype=buffer.dtype)
+
     logger.info(f"Loaded {model_name} block {block_index}")
     return block
 
