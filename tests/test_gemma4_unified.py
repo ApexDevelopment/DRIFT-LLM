@@ -110,9 +110,9 @@ def test_unified_block_stack_matches_hf():
             assert block.self_attn.v_proj is None
         with torch.inference_mode():
             (out,) = block(layer_in[i])
-        assert torch.allclose(out, layer_out[i], atol=ATOL), (
-            f"layer {i} ({cfg.layer_types[i]}): {(out - layer_out[i]).abs().max().item()}"
-        )
+        assert torch.allclose(
+            out, layer_out[i], atol=ATOL
+        ), f"layer {i} ({cfg.layer_types[i]}): {(out - layer_out[i]).abs().max().item()}"
 
 
 def test_unified_block_stack_with_kv_sharing():
