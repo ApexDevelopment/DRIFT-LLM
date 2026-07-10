@@ -1,5 +1,6 @@
 import asyncio
 import multiprocessing as mp
+import os
 import random
 import time
 from typing import Optional
@@ -89,6 +90,12 @@ async def test_unlimited_timeout():
     assert 0.5 < time.perf_counter() - t_start < 0.6, "memory should be allocated after background task clears"
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "fork"),
+    reason="Exercises the POSIX deployment shape where connection handlers are forked child processes; "
+    "on Windows handlers run as threads in the runtime process (hivemind MPProcessBase), so this "
+    "shape never exists there. Covered by the Linux CI leg.",
+)
 @pytest.mark.asyncio
 async def test_cache_usage():
     cache = MemoryCache(max_size_bytes=2048)

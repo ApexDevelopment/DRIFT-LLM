@@ -1,4 +1,5 @@
 import multiprocessing as mp
+import os
 import platform
 import time
 
@@ -7,6 +8,15 @@ import torch
 from hivemind.moe.server.runtime import Runtime
 
 from drift.server.task_pool import PrioritizedTaskPool
+
+# pytest-forked's runtest hook calls os.fork() before skip marks are evaluated, so the marker itself
+# must be conditional. On Windows the forked-process shape this test simulates never exists anyway:
+# connection handlers run as threads in the runtime process (hivemind MPProcessBase).
+forked_posix_only = (
+    pytest.mark.forked
+    if hasattr(os, "fork")
+    else pytest.mark.skip(reason="Requires os.fork; on Windows handlers run as threads, covered by the Linux CI leg")
+)
 
 
 def _submit_tasks(runtime_ready, pools, results_valid):
@@ -29,7 +39,7 @@ def _submit_tasks(runtime_ready, pools, results_valid):
 
 
 @pytest.mark.skipif(platform.system() == "Darwin", reason="Flapping on macOS due to multiprocessing quirks")
-@pytest.mark.forked
+@forked_posix_only
 def test_priority_pools():
     outputs_queue = mp.SimpleQueue()
     runtime_ready = mp.Event()
