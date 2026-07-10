@@ -9,9 +9,13 @@ tower, so it must (a) dispatch on the nested text config, (b) load blocks from
 
 Everything here is synthesized on disk and run single-process -- no download, swarm, or network.
 """
+import logging
 import os
+import shutil
+from contextlib import contextmanager
 
 import pytest
+import safetensors
 import torch
 from safetensors.torch import save_file
 
@@ -80,6 +84,12 @@ def wrapper_checkpoint(tmp_path_factory):
     # must be ignored on load.
     state_dict = {f"model.language_model.{k}": v for k, v in text_model.state_dict().items()}
     state_dict["model.vision_tower.patch_embedder.position_embedding_table"] = torch.randn(4, 8)
+    # The released checkpoints ship k/v projections + norms for KV-shared consumer layers even
+    # though those modules don't exist (layers 4/5 here); the block loader must drop them quietly.
+    for i in (4, 5):
+        state_dict[f"model.language_model.layers.{i}.self_attn.k_proj.weight"] = torch.randn(16, 64)
+        state_dict[f"model.language_model.layers.{i}.self_attn.v_proj.weight"] = torch.randn(16, 64)
+        state_dict[f"model.language_model.layers.{i}.self_attn.k_norm.weight"] = torch.randn(16)
     save_file(state_dict, os.path.join(path, "model.safetensors"), metadata={"format": "pt"})
 
     wrapper_cfg = Gemma4Config(text_config=text_cfg.to_dict())
@@ -166,6 +176,54 @@ def test_wrapper_blocks_load_bit_exact(wrapper_checkpoint):
         assert torch.allclose(out, layer_out[i], atol=ATOL), (i, (out - layer_out[i]).abs().max().item())
 
     assert set(shared_kv_states) == {"sliding_attention", "full_attention"}
+
+
+@contextmanager
+def _capture_loader_warnings():
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            if record.levelno >= logging.WARNING:
+                records.append(record.getMessage())
+
+    handler = _Capture()
+    loader_logger = logging.getLogger("drift.server.from_pretrained")
+    loader_logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        loader_logger.removeHandler(handler)
+
+
+def test_no_warning_for_by_design_leftover_keys(wrapper_checkpoint):
+    """Consumer-layer k/v decoy keys (present in real checkpoints) must not trigger the
+    unconsumed-key warning; nor must a fully consumed block."""
+    path, _ = wrapper_checkpoint
+    cfg = AutoDistributedConfig.from_pretrained(path)
+
+    with _capture_loader_warnings() as records:
+        load_pretrained_block(path, 0, config=cfg, torch_dtype=torch.float32)  # ordinary layer
+        load_pretrained_block(path, 4, config=cfg, torch_dtype=torch.float32)  # consumer with decoys
+    assert records == [], records
+
+
+def test_warns_on_unconsumed_checkpoint_key(wrapper_checkpoint, tmp_path):
+    """A checkpoint key the block neither loads nor declares ignored must be warned about --
+    that is trained state being dropped (the Gemma 4 layer_scalar failure mode)."""
+    path, _ = wrapper_checkpoint
+
+    with safetensors.safe_open(os.path.join(path, "model.safetensors"), framework="pt") as f:
+        state_dict = {key: f.get_tensor(key) for key in f.keys()}
+    state_dict["model.language_model.layers.0.mystery_scale"] = torch.randn(1)
+    save_file(state_dict, os.path.join(tmp_path, "model.safetensors"), metadata={"format": "pt"})
+    for name in ("config.json",):
+        shutil.copy(os.path.join(path, name), os.path.join(tmp_path, name))
+
+    cfg = AutoDistributedConfig.from_pretrained(str(tmp_path))
+    with _capture_loader_warnings() as records:
+        load_pretrained_block(str(tmp_path), 0, config=cfg, torch_dtype=torch.float32)
+    assert any("mystery_scale" in message for message in records), records
 
 
 def test_wrapper_mixin_injects_key_mapping(wrapper_checkpoint, text_only_checkpoint):

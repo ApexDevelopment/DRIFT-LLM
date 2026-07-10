@@ -7,6 +7,7 @@ If necessary, one can rewrite this to implement a different behavior, such as:
 
 """
 import json
+import re
 import time
 from contextlib import suppress
 from typing import Dict, Optional, Union
@@ -90,6 +91,21 @@ def load_pretrained_block(
         if not str(buffer.dtype).startswith(("torch.uint", "torch.int", "torch.bool")):
             buffer = buffer.to(torch_dtype)
         set_module_tensor_to_device(block, buffer_name, "cpu", value=buffer, dtype=buffer.dtype)
+
+    # Any checkpoint key under this block's prefix that matched neither a parameter nor a buffer
+    # is trained state being silently dropped (how Gemma 4's layer_scalar went missing) -- unless
+    # the block declares it ignored by design (e.g. the k/v projections checkpoints ship for
+    # KV-shared consumer layers, which the module intentionally does not have).
+    ignored = [re.compile(p) for p in getattr(block, "_keys_to_ignore_on_load_unexpected", None) or []]
+    module_tensor_names = {name for name, _ in block.named_parameters()} | {name for name, _ in block.named_buffers()}
+    leftover = sorted(
+        key for key in state_dict if key not in module_tensor_names and not any(p.search(key) for p in ignored)
+    )
+    if leftover:
+        logger.warning(
+            f"Block {block_index}: checkpoint keys were not loaded into {type(block).__name__}: {leftover}. "
+            f"The block will run without this trained state and may produce wrong outputs."
+        )
 
     logger.info(f"Loaded {model_name} block {block_index}")
     return block

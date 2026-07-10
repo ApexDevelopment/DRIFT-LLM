@@ -50,6 +50,11 @@ class WrappedGemma4Block(WrappedGemmaBlock, Gemma4TextDecoderLayer):
         # cache index is normalized to 0. A sharing layer has no k/v/norm weights of its own.
         self.is_kv_shared_layer = self.self_attn.is_kv_shared_layer
         self.store_full_length_kv = self.self_attn.store_full_length_kv
+        if self.is_kv_shared_layer:
+            # Checkpoints (e.g. gemma-4-E2B-it) still ship k/v projections + norms for KV-shared
+            # layers even though the module has none (it attends against the donor's K/V); tell
+            # the block loader these leftovers are dropped by design, not lost trained state.
+            self._keys_to_ignore_on_load_unexpected = [r"^self_attn\.(k_proj|v_proj|k_norm|v_norm)\."]
 
     def forward(
         self,
