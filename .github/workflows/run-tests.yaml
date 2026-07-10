@@ -56,4 +56,5 @@ jobs:
             tests/test_paged_cache.py \
             tests/test_peft.py \
             tests/test_priority_pool.py \
+            tests/test_startup_guard.py \
             tests/test_tied_embeddings_from_pretrained.py

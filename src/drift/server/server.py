@@ -43,7 +43,7 @@ from drift.utils.hardware import (
     is_accelerator,
     normalize_device,
 )
-from drift.utils.misc import get_size_in_bytes
+from drift.utils.misc import format_all_thread_stacks, get_size_in_bytes
 from drift.utils.ping import PingAggregator
 from drift.utils.random import sample_up_to
 from drift.utils.version import get_compatible_model_repo
@@ -114,6 +114,7 @@ class Server:
         balance_quality: float = 0.75,
         mean_balance_check_period: float = 120,
         mean_block_selection_delay: float = 5,
+        ready_timeout: float = 120,
         token: Optional[Union[str, bool]] = None,
         quant_type: Optional[QuantType] = None,
         tensor_parallel_devices: Optional[Sequence[torch.device]] = None,
@@ -315,6 +316,7 @@ class Server:
         self.balance_quality = balance_quality
         self.mean_balance_check_period = mean_balance_check_period
         self.mean_block_selection_delay = mean_block_selection_delay
+        self.ready_timeout = ready_timeout
 
         self.module_container = None
         self.stop = threading.Event()
@@ -435,6 +437,7 @@ class Server:
                 token=self.token,
                 quant_type=self.quant_type,
                 tensor_parallel_devices=self.tensor_parallel_devices,
+                ready_timeout=self.ready_timeout,
                 start=True,
             )
             try:
@@ -604,6 +607,7 @@ class ModuleContainer(threading.Thread):
                     max_batch_size=max_batch_size,
                 )
 
+            logger.info(f"Initialized backends for {len(blocks)} blocks, merging inference pools")
             merge_inference_pools_inplace(blocks)
         except:
             logger.debug("Shutting down backends")
@@ -640,10 +644,14 @@ class ModuleContainer(threading.Thread):
         request_timeout: float,
         session_timeout: float,
         step_timeout: float,
+        ready_timeout: float = 120,
         start: bool,
         **kwargs,
     ):
-        super().__init__()
+        # Daemon, so that a runtime wedged during startup cannot keep the interpreter alive after a
+        # readiness timeout aborts the process; graceful teardown always goes through shutdown().
+        super().__init__(daemon=True)
+        self.ready_timeout = ready_timeout
 
         self.dht, self.module_backends = dht, module_backends
         self.server_info, self.update_period, self.expiration = server_info, update_period, expiration
@@ -680,19 +688,37 @@ class ModuleContainer(threading.Thread):
         Runs ModuleContainer in the current thread. Initializes dht if necessary, starts connection handlers,
         runs Runtime (self.runtime) to process incoming requests.
         """
-        for handler in self.conn_handlers:
-            handler.run_in_background()
+        logger.info(f"Registering {len(self.conn_handlers)} connection handler(s) with the p2p daemon")
+        for i, handler in enumerate(self.conn_handlers):
+            try:
+                handler.run_in_background(timeout=self.ready_timeout)
+            except TimeoutError:
+                # The historical wedge point: the handler drives the DHT's p2p daemon during
+                # add_p2p_handlers, so a daemon/event-loop deadlock parks it here forever.
+                logger.error(
+                    f"Connection handler {i} did not become ready within {self.ready_timeout} seconds. "
+                    f"Thread stacks:\n{format_all_thread_stacks()}"
+                )
+                raise
 
+        logger.info("Connection handlers are ready, starting the runtime")
         self.runtime.run()
 
     def run_in_background(self, await_ready=True, timeout=None):
         """
         Starts ModuleContainer in a background thread. if await_ready, this method will wait until the container
-        is ready to process incoming requests or for :timeout: seconds max.
+        is ready to process incoming requests or for :timeout: seconds max (default: self.ready_timeout).
+        On timeout, dumps every thread's stack (to localize the stuck phase) and raises instead of hanging.
         """
         self.start()
-        if await_ready and not self.ready.wait(timeout=timeout):
-            raise TimeoutError("ModuleContainer didn't notify .ready in {timeout} seconds")
+        if await_ready:
+            timeout = timeout if timeout is not None else self.ready_timeout
+            if not self.ready.wait(timeout=timeout):
+                logger.error(
+                    f"Server did not become ready within {timeout} seconds (see --ready_timeout). "
+                    f"Thread stacks:\n{format_all_thread_stacks()}"
+                )
+                raise TimeoutError(f"ModuleContainer didn't notify .ready in {timeout} seconds")
 
     @property
     def ready(self) -> mp.synchronize.Event:

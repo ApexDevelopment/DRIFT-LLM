@@ -1,4 +1,7 @@
 import contextlib
+import sys
+import threading
+import traceback
 
 import torch
 
@@ -11,6 +14,21 @@ DUMMY_KEY_PAST = torch.empty((0, 0, 0))
 
 def is_dummy(tensor: torch.Tensor) -> bool:
     return tensor.numel() == 0
+
+
+def format_all_thread_stacks() -> str:
+    """Render the current stack of every live thread, like SIGQUIT or an external profiler dump.
+
+    Exists because the process must be able to dump itself: py-spy cannot attach to uv-managed
+    CPython, and Windows has no SIGQUIT -- so a wedged server would otherwise be indistinguishable
+    from a slow one.
+    """
+    names = {t.ident: t.name for t in threading.enumerate()}
+    parts = []
+    for ident, frame in sorted(sys._current_frames().items()):
+        stack = "".join(traceback.format_stack(frame))
+        parts.append(f'Thread "{names.get(ident, "unknown")}" (ident {ident}):\n{stack}')
+    return "\n".join(parts)
 
 
 SPECIAL_DTYPE_SIZES = {torch.bool: 1, torch.qint8: 1, torch.qint32: 4}

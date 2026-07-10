@@ -1,4 +1,5 @@
 import argparse
+import faulthandler
 import logging
 
 import configargparse
@@ -58,6 +59,15 @@ def build_parser() -> configargparse.ArgParser:
 
     parser.add_argument('--daemon_startup_timeout', type=float, default=60,
                         help='Timeout for the libp2p daemon connecting to initial peers')
+    parser.add_argument('--ready_timeout', type=float, default=120,
+                        help='Maximum seconds to wait for the server to become ready to process requests '
+                             '(connection handler registration and runtime start, after blocks are loaded). '
+                             'On expiry the server dumps every thread\'s stack and exits nonzero instead of '
+                             'hanging silently.')
+    parser.add_argument('--debug_hang_dump', type=float, default=None, metavar='SECONDS',
+                        help='Debug: dump every thread\'s stack to stderr each SECONDS seconds for the whole '
+                             'process lifetime (faulthandler.dump_traceback_later). Useful to localize hangs '
+                             'from outside: py-spy cannot attach to uv-managed CPython, and Windows has no SIGQUIT.')
 
     parser.add_argument('--compression', type=str, default='NONE', required=False, help='Tensor compression communication')
 
@@ -203,6 +213,10 @@ def server_from_args(args: dict) -> Server:
         announce_maddrs = [f"/ip4/{public_ip}/tcp/{port}"]
 
     args["startup_timeout"] = args.pop("daemon_startup_timeout")
+
+    hang_dump_interval = args.pop("debug_hang_dump")
+    if hang_dump_interval:
+        faulthandler.dump_traceback_later(hang_dump_interval, repeat=True)
 
     file_limit = args.pop("increase_file_limit")
     if file_limit:
