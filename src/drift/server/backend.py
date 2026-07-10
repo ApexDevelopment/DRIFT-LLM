@@ -83,12 +83,14 @@ class TransformerBackend(ModuleBackend):
         self.dtype_bytes = get_size_in_bytes(self.dtype)
         self.shard_num_heads = []
         shard_head_dims = []
+        shard_kv_groups = []
         donor_layer_types = set()
         for shard in self.module.module_shards:
             for submodule in shard.modules():
                 if isinstance(submodule, config.attn_class):
                     self.shard_num_heads.append(get_num_attention_heads(submodule, config))
                     shard_head_dims.append(getattr(submodule, "head_dim", None))
+                    shard_kv_groups.append(getattr(submodule, "num_key_value_groups", None))
                     # Gemma 4 KV-sharing: a donor layer stores its full-length K/V for the consumer
                     # layers of the same attention type. Record which type(s) this block donates so the
                     # server can ship them to a consumer hosted downstream (see block_functions).
@@ -100,13 +102,17 @@ class TransformerBackend(ModuleBackend):
         # All shards of a block share one attention type, so this block donates 0 or 1 layer type.
         self.donor_layer_types = sorted(donor_layer_types)
 
-        # Some architectures (Gemma 4) use a per-layer-type head_dim: full-attention layers use
-        # `global_head_dim`, sliding layers use `head_dim`. The attention module carries the value
-        # actually in use, so derive the cache head_dim from it rather than the (single) config field.
-        # All shards of one block share a layer_type, hence one head_dim; None means "fall back to config".
+        # Some architectures use a per-layer-type KV geometry the (single) config can't express:
+        # Gemma 4 full-attention layers use `global_head_dim`, and Gemma 4 Unified ones additionally
+        # have their own kv-head count (`num_global_key_value_heads`). The attention module carries
+        # the values actually in use, so derive the cache geometry from it. All shards of one block
+        # share a layer_type, hence one value each; None means "fall back to config".
         block_head_dims = {d for d in shard_head_dims if d is not None}
         assert len(block_head_dims) <= 1, f"Inconsistent head_dim across shards: {shard_head_dims}"
         self.cache_head_dim = block_head_dims.pop() if block_head_dims else None
+        block_kv_groups = {g for g in shard_kv_groups if g is not None}
+        assert len(block_kv_groups) <= 1, f"Inconsistent num_key_value_groups across shards: {shard_kv_groups}"
+        self.cache_kv_groups = block_kv_groups.pop() if block_kv_groups else None
 
         # The cache layout (descriptor shapes, prefix selection, write-back) is owned by a
         # pluggable strategy so that non-standard layouts (sliding window, MLA) can be added
@@ -153,6 +159,7 @@ class TransformerBackend(ModuleBackend):
             devices=self.module.devices,
             shard_num_heads=self.shard_num_heads,
             head_dim=self.cache_head_dim,
+            num_key_value_groups=self.cache_kv_groups,
         )
 
     def forward(self, *inputs: Union[torch.Tensor, str]) -> Tuple[torch.Tensor, ...]:
