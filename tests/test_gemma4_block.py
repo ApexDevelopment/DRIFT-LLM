@@ -3,7 +3,11 @@ Offline exact-match tests for the Gemma 4 block (per-layer inputs + KV sharing).
 
 Checks the wrapped block against a tiny stock HF ``Gemma4TextModel`` across all four layer roles
 (sliding/full x donor/sharing), the per-layer-input side channel, and the BLOOM cache round-trip on
-a non-sharing layer. No swarm / network / download required (does not import test_utils).
+a non-sharing layer. Also covers the MoE variant of the family (e.g. google/gemma-4-26B-A4B-it):
+same ``gemma4`` model type, but with ``enable_moe_block`` (in-layer router + experts alongside the
+dense MLP), ``attention_k_eq_v`` full layers (no v_proj, own MQA kv-head count and wider
+``global_head_dim``), proportional partial RoPE on full layers, and PLE / KV sharing switched off.
+No swarm / network / download required (does not import test_utils).
 """
 import pytest
 import torch
@@ -150,6 +154,132 @@ def test_gemma4_pipeline_across_spans():
         hidden = model.norm(hidden)
 
     assert torch.allclose(hidden, reference, atol=ATOL), (hidden - reference).abs().max()
+
+
+def _moe_tiny_config():
+    """Mirrors google/gemma-4-26B-A4B-it's structure at toy size: MoE block in every layer,
+    k_eq_v full-attention layers with their own MQA kv-head count and wider head_dim, proportional
+    partial RoPE on full layers, PLE and KV sharing off."""
+    from transformers.models.gemma4 import Gemma4TextConfig
+
+    return Gemma4TextConfig(
+        vocab_size=128,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_global_key_value_heads=1,
+        head_dim=16,
+        global_head_dim=32,
+        attention_k_eq_v=True,
+        layer_types=[
+            "sliding_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+        num_kv_shared_layers=0,
+        sliding_window=1024,
+        hidden_size_per_layer_input=0,
+        enable_moe_block=True,
+        num_experts=8,
+        top_k_experts=2,
+        moe_intermediate_size=32,
+        rope_parameters={
+            "full_attention": {"rope_type": "proportional", "rope_theta": 1_000_000.0, "partial_rotary_factor": 0.25},
+            "sliding_attention": {"rope_type": "default", "rope_theta": 10_000.0},
+        },
+        final_logit_softcapping=30.0,
+        tie_word_embeddings=True,
+    )
+
+
+def _moe_model_and_refs(cfg, input_ids):
+    """Stock MoE model (with randomized layer_scalar, as the released checkpoints ship values != 1)
+    and each layer's exact input/output."""
+    from transformers.models.gemma4 import Gemma4TextModel
+
+    torch.manual_seed(0)
+    model = Gemma4TextModel(cfg).eval()
+    with torch.no_grad():
+        for layer in model.layers:
+            layer.layer_scalar.copy_(0.5 + torch.rand(1))
+
+    layer_in, layer_out = {}, {}
+
+    def pre_hook(idx):
+        def hook(_module, args, kwargs):
+            layer_in[idx] = (args[0] if args else kwargs["hidden_states"]).detach().clone()
+
+        return hook
+
+    def out_hook(idx):
+        def hook(_module, _args, _kwargs, output):
+            layer_out[idx] = (output[0] if isinstance(output, tuple) else output).detach().clone()
+
+        return hook
+
+    for i, layer in enumerate(model.layers):
+        layer.register_forward_pre_hook(pre_hook(i), with_kwargs=True)
+        layer.register_forward_hook(out_hook(i), with_kwargs=True)
+
+    with torch.inference_mode():
+        model(input_ids, use_cache=False)
+
+    return model, layer_in, layer_out
+
+
+def test_gemma4_moe_block_stack_matches_hf():
+    cfg = _moe_tiny_config()
+    input_ids = torch.randint(0, cfg.vocab_size, (1, 6))
+    model, layer_in, layer_out = _moe_model_and_refs(cfg, input_ids)
+
+    for i in range(cfg.num_hidden_layers):
+        block = WrappedGemma4Block(cfg, layer_idx=i).eval()
+        missing, unexpected = block.load_state_dict(model.layers[i].state_dict(), strict=False)
+        assert not unexpected, f"layer {i} unexpected keys: {unexpected}"
+        assert all("rotary" in name for name in missing), f"layer {i} unexpected missing keys: {missing}"
+
+        # Every layer must carry the MoE block; full layers must actually exercise k_eq_v.
+        assert block.enable_moe_block and block.experts.num_experts == cfg.num_experts
+        if cfg.layer_types[i] == "full_attention":
+            assert block.self_attn.v_proj is None
+
+        with torch.inference_mode():
+            (out,) = block(layer_in[i])
+        assert torch.allclose(out, layer_out[i], atol=ATOL), (
+            f"layer {i} ({cfg.layer_types[i]}): {(out - layer_out[i]).abs().max().item()}"
+        )
+
+
+@pytest.mark.parametrize("layer_idx", [0, 2])  # sliding GQA (2x16) and full k_eq_v MQA (1x32, partial rope)
+def test_gemma4_moe_block_cache_roundtrip(layer_idx):
+    cfg = _moe_tiny_config()
+    input_ids = torch.randint(0, cfg.vocab_size, (1, 5))
+    model, layer_in, layer_out = _moe_model_and_refs(cfg, input_ids)
+
+    block = WrappedGemma4Block(cfg, layer_idx=layer_idx).eval()
+    block.load_state_dict(model.layers[layer_idx].state_dict(), strict=False)
+
+    x = layer_in[layer_idx]
+    with torch.inference_mode():
+        prefill_out, _ = block(x, use_cache=True)
+
+        past, steps = None, []
+        for i in range(input_ids.shape[1]):
+            step_out, past = block(x[:, i : i + 1], layer_past=past, use_cache=True)
+            steps.append(step_out)
+        stepwise_out = torch.cat(steps, dim=1)
+
+    assert torch.allclose(prefill_out, layer_out[layer_idx], atol=ATOL), (
+        (prefill_out - layer_out[layer_idx]).abs().max()
+    )
+    assert torch.allclose(stepwise_out, layer_out[layer_idx], atol=ATOL), (
+        (stepwise_out - layer_out[layer_idx]).abs().max()
+    )
 
 
 def test_gemma4_nonshared_block_cache_roundtrip():

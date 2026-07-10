@@ -179,7 +179,7 @@ Dense GQA models:
 - Gemma 2/3
 - Mistral
 
-Plus **Gemma 4** (per-layer embeddings + cross-server KV sharing; DRIFT-LLM serves the text tower of the multimodal checkpoints, e.g. `google/gemma-4-E2B-it`), **Gemma 4 Unified** (the dense mid-size branch with k=v full-attention layers, e.g. `google/gemma-4-12B-it`), **Mixtral** (mixture of experts), **DeepSeek-V3** (multi-head latent attention + MoE), **Falcon**, and **BLOOM**. Any checkpoint in one of these architectures on the Hugging Face Hub should work.
+Plus **Gemma 4** (per-layer embeddings + cross-server KV sharing; DRIFT-LLM serves the text tower of the multimodal checkpoints, e.g. `google/gemma-4-E2B-it`, including the MoE variant `google/gemma-4-26B-A4B-it`), **Gemma 4 Unified** (the dense mid-size branch with k=v full-attention layers, e.g. `google/gemma-4-12B-it`), **Mixtral** (mixture of experts), **DeepSeek-V3** (multi-head latent attention + MoE), **Falcon**, and **BLOOM**. Any checkpoint in one of these architectures on the Hugging Face Hub should work.
 
 ## Security
 
