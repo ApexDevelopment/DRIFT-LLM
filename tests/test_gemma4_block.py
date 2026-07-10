@@ -250,9 +250,9 @@ def test_gemma4_moe_block_stack_matches_hf():
 
         with torch.inference_mode():
             (out,) = block(layer_in[i])
-        assert torch.allclose(out, layer_out[i], atol=ATOL), (
-            f"layer {i} ({cfg.layer_types[i]}): {(out - layer_out[i]).abs().max().item()}"
-        )
+        assert torch.allclose(
+            out, layer_out[i], atol=ATOL
+        ), f"layer {i} ({cfg.layer_types[i]}): {(out - layer_out[i]).abs().max().item()}"
 
 
 @pytest.mark.parametrize("layer_idx", [0, 2])  # sliding GQA (2x16) and full k_eq_v MQA (1x32, partial rope)
