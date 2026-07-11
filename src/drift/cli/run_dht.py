@@ -16,6 +16,7 @@ from hivemind.utils.logging import get_logger, use_hivemind_log_handler
 from hivemind.utils.networking import log_visible_maddrs
 
 from drift.server.reachability import ReachabilityProtocol
+from drift.utils.process_lifetime import tie_child_processes_to_this_process
 
 use_hivemind_log_handler("in_root_logger")
 logger = get_logger(__name__)
@@ -82,6 +83,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Arm this before the DHT can spawn a p2pd, so a hard-killed bootstrap node does not orphan its daemon
+    tie_child_processes_to_this_process()
 
     dht = DHT(
         start=True,

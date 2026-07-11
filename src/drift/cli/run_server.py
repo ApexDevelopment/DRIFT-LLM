@@ -12,6 +12,7 @@ from humanfriendly import parse_size
 from drift.constants import DTYPE_MAP
 from drift.server.server import Server
 from drift.utils.convert_block import QuantType
+from drift.utils.process_lifetime import tie_child_processes_to_this_process
 from drift.utils.version import log_version
 
 logger = get_logger(__name__)
@@ -194,6 +195,9 @@ def server_from_args(args: dict) -> Server:
     Shared by `drift server` (run_server.main) and the `drift up` launcher so both
     expose exactly the same configuration surface. Mutates and consumes ``args``.
     """
+    # Arm this before anything can spawn a p2pd, so a hard-killed server does not orphan its daemons
+    tie_child_processes_to_this_process()
+
     args["converted_model_name_or_path"] = args.pop("model") or args["converted_model_name_or_path"]
 
     host_maddrs = args.pop("host_maddrs")
