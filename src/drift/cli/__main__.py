@@ -3,6 +3,7 @@
     drift up <model> [--join ...]   Start/join a private swarm in one command (recommended)
     drift server <model> ...        The full server with every knob (drift.cli.run_server)
     drift dht ...                   A standalone lightweight DHT bootstrap peer
+    drift api <model> ...           An OpenAI-compatible HTTP API backed by the swarm
 
 Each subcommand owns its own argument parsing; this shim just strips the subcommand
 name and delegates. Also runnable as ``python -m drift.cli``.
@@ -10,7 +11,7 @@ name and delegates. Also runnable as ``python -m drift.cli``.
 
 import sys
 
-_COMMANDS = ("up", "server", "dht")
+_COMMANDS = ("up", "server", "dht", "api")
 
 _USAGE = """usage: drift <command> [options]
 
@@ -20,6 +21,7 @@ commands:
               other machines: drift up <model> --join drift://<peer_id>@<host>:<port>
   server    Run a server with the full set of options (advanced)
   dht       Run a standalone DHT bootstrap peer
+  api       Serve an OpenAI-compatible HTTP API backed by the swarm (requires drift[api])
 
 Run `drift <command> --help` for command-specific options.
 """
@@ -42,6 +44,8 @@ def main() -> int:
         from drift.cli.run_up import main as run
     elif command == "server":
         from drift.cli.run_server import main as run
+    elif command == "api":
+        from drift.cli.run_api import main as run
     else:  # dht
         from drift.cli.run_dht import main as run
 

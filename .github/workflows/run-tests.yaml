@@ -53,6 +53,7 @@ jobs:
             tests/test_gemma4_unified.py \
             tests/test_join_token.py \
             tests/test_kv_cache_strategy.py \
+            tests/test_openai_api.py \
             tests/test_paged_cache.py \
             tests/test_peft.py \
             tests/test_priority_pool.py \

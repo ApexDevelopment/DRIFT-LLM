@@ -119,6 +119,28 @@ Larger models simply need more machines (or bigger GPUs) among the servers; the 
 
 **Gated models.** For Llama and other gated weights, request access on the Hugging Face Hub and run `huggingface-cli login` on the servers and client before starting them.
 
+### 4. Optional: an OpenAI-compatible HTTP API
+
+`drift api` runs a swarm client behind an OpenAI-compatible HTTP server (`/v1/models`, `/v1/chat/completions`, `/v1/completions`, including streaming), so any OpenAI SDK or tool can talk to the swarm. It needs the `api` extra (`uv sync --extra api` or `pip install drift[api]`):
+
+```bash
+drift api meta-llama/Llama-3.1-8B-Instruct \
+    --initial_peers /ip4/203.0.113.10/tcp/31337/p2p/QmXXX... \
+    --host 0.0.0.0 --port 8080 --api_key my-secret-key
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://203.0.113.10:8080/v1", api_key="my-secret-key")
+print(client.chat.completions.create(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    messages=[{"role": "user", "content": "Hello!"}],
+).choices[0].message.content)
+```
+
+Generation is serialized (`--max_concurrent`, default 1) since each in-flight request holds a server-side attention cache.
+
 ## Installation
 
 The [Quickstart](#quickstart) install scripts (`scripts/install.sh` / `scripts/install.ps1`) are the easiest path — they detect your accelerator, install a matching PyTorch build, and provide the `drift` command. The rest of this section covers installing manually.
@@ -131,7 +153,7 @@ cd DRIFT-LLM
 uv sync --extra dev
 ```
 
-This installs the `drift` command (`drift up`, `drift server`, `drift dht`); each is also runnable as `python -m drift.cli <command>`.
+This installs the `drift` command (`drift up`, `drift server`, `drift dht`, `drift api`); each is also runnable as `python -m drift.cli <command>`.
 
 ### Windows native setup
 
