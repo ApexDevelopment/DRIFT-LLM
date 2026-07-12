@@ -66,7 +66,7 @@ def _mps_supports_bfloat16() -> bool:
     if _mps_bfloat16_supported is None:
         try:
             probe = torch.ones(2, 2, dtype=torch.bfloat16, device="mps")
-            _mps_bfloat16_supported = bool(((probe @ probe).sum() == 4.0).item())
+            _mps_bfloat16_supported = bool(((probe @ probe).sum() == 8.0).item())
         except Exception:
             _mps_bfloat16_supported = False
     return _mps_bfloat16_supported
