@@ -42,6 +42,7 @@ from drift.utils.hardware import (
     get_memory_stats,
     is_accelerator,
     normalize_device,
+    supports_dtype,
 )
 from drift.utils.misc import format_all_thread_stacks, get_size_in_bytes
 from drift.utils.ping import PingAggregator
@@ -197,13 +198,13 @@ class Server:
         self.device = device
 
         torch_dtype = resolve_block_dtype(self.block_config, DTYPE_MAP[torch_dtype])
-        if device.type == "cpu" and torch_dtype == torch.float16:
-            raise ValueError(
-                f"Type float16 is not supported on CPU. Please use --torch_dtype float32 or --torch_dtype bfloat16"
-            )
-        if device.type == "mps" and torch_dtype == torch.bfloat16:
-            logger.warning(f"Type bfloat16 is not supported on MPS, using float16 instead")
-            torch_dtype = torch.float16
+        dtype_error = supports_dtype(device, torch_dtype)
+        if dtype_error is not None:
+            if device.type == "mps" and torch_dtype == torch.bfloat16:
+                logger.warning(f"{dtype_error}, using float16 instead")
+                torch_dtype = torch.float16
+            else:
+                raise ValueError(f"{dtype_error}. Please use a different --torch_dtype")
         self.torch_dtype = torch_dtype
 
         if tensor_parallel_devices is None:

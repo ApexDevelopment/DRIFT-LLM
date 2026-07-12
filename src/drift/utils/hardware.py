@@ -53,16 +53,35 @@ def normalize_device(device: torch.device) -> torch.device:
     return device
 
 
+_mps_bfloat16_supported: Optional[bool] = None
+
+
+def _mps_supports_bfloat16() -> bool:
+    """Probe bfloat16 support on MPS once and cache the verdict.
+
+    torch supports bfloat16 on MPS since macOS 14 / Apple Silicon (M2+); older stacks raise on
+    allocation or produce unusable kernels, so an empirical probe beats a version allowlist.
+    """
+    global _mps_bfloat16_supported
+    if _mps_bfloat16_supported is None:
+        try:
+            probe = torch.ones(2, 2, dtype=torch.bfloat16, device="mps")
+            _mps_bfloat16_supported = bool(((probe @ probe).sum() == 4.0).item())
+        except Exception:
+            _mps_bfloat16_supported = False
+    return _mps_bfloat16_supported
+
+
 def supports_dtype(device: torch.device, dtype: torch.dtype) -> Optional[str]:
     """Return None if ``dtype`` is usable on ``device``, else a human-readable reason string.
 
-    Mirrors torch's practical constraints: CPU has no float16 GEMM, and MPS has no bfloat16.
-    CUDA and XPU support float16/bfloat16/float32.
+    Mirrors torch's practical constraints: CPU has no float16 GEMM, and MPS gained bfloat16 only
+    on macOS 14+ (probed empirically). CUDA and XPU support float16/bfloat16/float32.
     """
     if device.type == "cpu" and dtype == torch.float16:
         return "float16 is not supported on CPU; use --torch_dtype float32 or bfloat16"
-    if device.type == "mps" and dtype == torch.bfloat16:
-        return "bfloat16 is not supported on MPS"
+    if device.type == "mps" and dtype == torch.bfloat16 and not _mps_supports_bfloat16():
+        return "bfloat16 is not supported on this MPS build (requires macOS 14+)"
     return None
 
 
