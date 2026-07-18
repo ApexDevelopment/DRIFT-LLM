@@ -1,6 +1,7 @@
 """The ``drift`` command: a single entry point that dispatches to subcommands.
 
     drift up <model> [--join ...]   Start/join a private swarm in one command (recommended)
+    drift down                      Stop DRIFT-LLM servers running on this machine
     drift server <model> ...        The full server with every knob (drift.cli.run_server)
     drift dht ...                   A standalone lightweight DHT bootstrap peer
     drift api <model> ...           An OpenAI-compatible HTTP API backed by the swarm
@@ -11,7 +12,7 @@ name and delegates. Also runnable as ``python -m drift.cli``.
 
 import sys
 
-_COMMANDS = ("up", "server", "dht", "api")
+_COMMANDS = ("up", "down", "server", "dht", "api")
 
 _USAGE = """usage: drift <command> [options]
 
@@ -19,6 +20,7 @@ commands:
   up        Start or join a private swarm in one command (recommended)
               first machine:  drift up <model>
               other machines: drift up <model> --join drift://<peer_id>@<host>:<port>
+  down      Stop DRIFT-LLM servers running on this machine (drift down --list to preview)
   server    Run a server with the full set of options (advanced)
   dht       Run a standalone DHT bootstrap peer
   api       Serve an OpenAI-compatible HTTP API backed by the swarm (requires drift[api])
@@ -42,6 +44,8 @@ def main() -> int:
     sys.argv = [f"drift {command}", *rest]
     if command == "up":
         from drift.cli.run_up import main as run
+    elif command == "down":
+        from drift.cli.run_down import main as run
     elif command == "server":
         from drift.cli.run_server import main as run
     elif command == "api":

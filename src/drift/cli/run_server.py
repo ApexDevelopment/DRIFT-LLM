@@ -1,6 +1,8 @@
 import argparse
 import faulthandler
 import logging
+import signal
+from typing import Callable, Optional
 
 import configargparse
 import torch
@@ -13,9 +15,47 @@ from drift.constants import DTYPE_MAP
 from drift.server.server import Server
 from drift.utils.convert_block import QuantType
 from drift.utils.process_lifetime import tie_child_processes_to_this_process
+from drift.utils.server_registry import register_server, unregister_server
 from drift.utils.version import log_version
 
 logger = get_logger(__name__)
+
+
+def _install_graceful_sigterm() -> None:
+    """Make ``drift down`` (SIGTERM) shut down as cleanly as Ctrl+C (SIGINT).
+
+    Without this, the default SIGTERM handler kills the process outright, skipping the ``finally``
+    that announces the server offline and removes its registry record. On Windows a SIGTERM sent via
+    TerminateProcess never runs Python handlers, so this is a POSIX nicety; there the issue #5 job
+    object still guarantees the p2pd child dies with the server.
+    """
+
+    def _raise_keyboard_interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    except (ValueError, OSError):
+        pass  # not the main thread, or the platform disallows it
+
+
+def serve(server: Server, *, model: Optional[str], on_ready: Optional[Callable[[Server], None]] = None) -> None:
+    """Run a built server to completion: record it for ``drift down``, then run and tear it down.
+
+    ``on_ready`` (if given) runs just before the blocking serve loop -- ``drift up`` uses it to print
+    the join banner.
+    """
+    _install_graceful_sigterm()
+    register_server(model=model, dht_prefix=server.dht_prefix, maddrs=server.dht.get_visible_maddrs())
+    try:
+        if on_ready is not None:
+            on_ready(server)
+        server.run()
+    except KeyboardInterrupt:
+        logger.info("Caught shutdown signal, shutting down")
+    finally:
+        unregister_server()
+        server.shutdown()
 
 
 def build_parser() -> configargparse.ArgParser:
@@ -269,13 +309,9 @@ def main():
     args = vars(parser.parse_args())
     args.pop("config", None)
 
+    model_name = args.get("model") or args.get("converted_model_name_or_path")
     server = server_from_args(args)
-    try:
-        server.run()
-    except KeyboardInterrupt:
-        logger.info("Caught KeyboardInterrupt, shutting down")
-    finally:
-        server.shutdown()
+    serve(server, model=model_name)
 
 
 if __name__ == "__main__":

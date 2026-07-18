@@ -63,6 +63,15 @@ outputs = model.generate(tokenizer("A cat sat", return_tensors="pt")["input_ids"
 print(tokenizer.decode(outputs[0]))
 ```
 
+**5. Stop a machine's servers.** `drift up` runs in the foreground, so `Ctrl+C` is the usual way to stop it. When you started it in the background (or it wedged), `drift down` stops the DRIFT-LLM servers running on that machine:
+
+```bash
+drift down --list   # preview what's running, stop nothing
+drift down          # stop them (gracefully, escalating to a kill if needed)
+```
+
+`drift down` only affects the machine it runs on; a server kept alive by an external supervisor (a Scheduled Task, systemd, a launchd `KeepAlive` agent) should be stopped there instead.
+
 ## Manual setup
 
 `drift up` wraps two lower-level commands, `drift dht` and `drift server`. Use them directly when you want full control — a dedicated always-on bootstrap peer, specific block ranges, custom ports, and so on.

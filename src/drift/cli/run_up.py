@@ -18,7 +18,7 @@ from pathlib import Path
 
 from hivemind.utils.logging import get_logger
 
-from drift.cli.run_server import build_parser, server_from_args
+from drift.cli.run_server import build_parser, serve, server_from_args
 from drift.utils.join_token import encode_join_token, parse_join, select_advertisable_maddrs
 
 logger = get_logger(__name__)
@@ -65,14 +65,12 @@ def main():
 
     is_first_node = bool(args.get("new_swarm"))
     server = server_from_args(args)
-    try:
+
+    def _on_ready(srv):
         if is_first_node:
-            _print_join_banner(server, model_name)
-        server.run()
-    except KeyboardInterrupt:
-        logger.info("Caught KeyboardInterrupt, shutting down")
-    finally:
-        server.shutdown()
+            _print_join_banner(srv, model_name)
+
+    serve(server, model=model_name, on_ready=_on_ready)
 
 
 def _print_join_banner(server, model_name: str) -> None:
