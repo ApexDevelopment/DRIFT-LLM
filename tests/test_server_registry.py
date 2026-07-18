@@ -74,6 +74,7 @@ def test_process_alive_and_terminate():
         assert not process_alive(sleeper.pid)
     finally:
         sleeper.kill()
+        sleeper.wait(timeout=ALIVE_DEADLINE)  # reap so the child does not linger as a zombie
 
 
 def test_process_alive_false_for_dead_pid():
@@ -127,6 +128,7 @@ def test_stop_servers_terminates_and_cleans_record():
         assert not (server_registry.RUN_DIR / f"server-{sleeper.pid}.json").exists()
     finally:
         sleeper.kill()
+        sleeper.wait(timeout=ALIVE_DEADLINE)  # reap so the child does not linger as a zombie
 
 
 def test_main_list_does_not_stop(monkeypatch, capsys):

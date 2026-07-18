@@ -115,8 +115,32 @@ def _win_process_alive(pid: int) -> bool:
         close_handle(handle)
 
 
+def _pid_is_zombie(pid: int) -> bool:
+    """True if pid is a defunct (already-exited, not-yet-reaped) process. POSIX only."""
+    if sys.platform.startswith("linux"):
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            return False
+        # Format: "<pid> (<comm>) <state> ..."; comm may itself contain spaces and parens, so split
+        # after the last ") " to reach the state field.
+        try:
+            return stat.rsplit(") ", 1)[1].split(" ", 1)[0] == "Z"
+        except IndexError:
+            return False
+    if sys.platform == "darwin":
+        import subprocess
+
+        try:
+            out = subprocess.run(["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        except Exception:
+            return False
+        return out.stdout.strip().startswith("Z")  # e.g. "Z", "Z+"
+    return False
+
+
 def process_alive(pid: int) -> bool:
-    """True if a process with this pid currently exists."""
+    """True if a process with this pid exists and is not a defunct (zombie) child."""
     if pid <= 0:
         return False
     if sys.platform == "win32":
@@ -127,6 +151,12 @@ def process_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True  # it exists, we just may not signal it
+    # os.kill(pid, 0) also succeeds for a zombie -- a child that has exited but not yet been reaped
+    # by its parent. A zombie is not a running server, so treat it as gone. (Zombies only arise for
+    # one's own children, which drift down never targets, so in practice this mainly keeps the test
+    # suite honest, where a terminated-but-unreaped sleeper child would otherwise read as alive.)
+    if _pid_is_zombie(pid):
+        return False
     return True
 
 
